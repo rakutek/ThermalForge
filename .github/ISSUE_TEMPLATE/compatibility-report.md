@@ -1,28 +1,37 @@
 ---
 name: Compatibility Report
-about: Report whether ThermalForge works on your Mac
+about: Report whether Kaze works on your Mac
 title: "[Compat] Mac __ M__"
 labels: compatibility
 ---
 
 **Machine:** MacBook Pro M__ (year)
 **macOS version:**
-**thermalforge version:**
+**Kaze version:**
+**Artifact SHA-256:**
 
 ## Results
 
-Run `thermalforge discover --output discover.txt` and attach the file.
+Attach the output of the signed bundled CLI. It contains temperatures and fan metadata but should not contain a serial number.
 
-- [ ] `thermalforge status` works (reads fans + temps)
-- [ ] `sudo thermalforge max` works (fans spin up)
-- [ ] `sudo thermalforge auto` works (fans reset)
-- [ ] `sudo thermalforge install` works (daemon starts)
-- [ ] Menu bar app shows temps
+```bash
+/Applications/Kaze.app/Contents/Library/Utilities/kaze status --json > status.json
+```
 
-## Discover output
+- [ ] Notarized app passes Gatekeeper and opens
+- [ ] Helper registration is enabled or the expected approval prompt appears
+- [ ] `kaze status` reads every fan and discovered sensor
+- [ ] A profile starts and renews its lease
+- [ ] Exiting the CLI restores Apple automatic mode
+- [ ] Sleep/wake restores Apple automatic mode and drops the old lease
+- [ ] Menu bar app shows fan and temperature status
 
-<!-- Attach your discover.txt file or paste key excerpts -->
+Do not run the recovery executable unless the normal signed helper is unavailable. Never attach signing credentials or unrelated system logs.
+
+## Status output
+
+<!-- Attach status.json. -->
 
 ## Notes
 
-<!-- Any issues, different key names, unexpected behavior -->
+<!-- Include unexpected fan keys, sensor gaps, faults, or read-back mismatches. -->

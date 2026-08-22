@@ -1,38 +1,78 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 
 import PackageDescription
 
 let package = Package(
-    name: "ThermalForge",
+    name: "Kaze",
     platforms: [.macOS(.v14)],
+    products: [
+        .library(name: "KazeDomain", targets: ["KazeDomain"]),
+        .library(name: "KazeIPC", targets: ["KazeIPC"]),
+        .library(name: "KazeHardware", targets: ["KazeHardware"]),
+        .executable(name: "KazeApp", targets: ["KazeApp"]),
+        .executable(name: "KazeHelper", targets: ["KazeHelper"]),
+        .executable(name: "kaze", targets: ["KazeCLI"]),
+        .executable(name: "kaze-recovery", targets: ["KazeRecovery"]),
+    ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
+        .package(url: "https://github.com/apple/swift-argument-parser", exact: "1.7.1"),
     ],
     targets: [
         .target(
-            name: "ThermalForgeCore",
-            path: "Sources/ThermalForgeCore",
-            linkerSettings: [
-                .linkedFramework("Metal"),
-            ]
+            name: "KazeDomain",
+            path: "Sources/KazeDomain"
+        ),
+        .target(
+            name: "KazeIPC",
+            dependencies: ["KazeDomain"],
+            path: "Sources/KazeIPC",
+            linkerSettings: [.linkedFramework("Security")]
+        ),
+        .target(
+            name: "KazeHardware",
+            dependencies: ["KazeDomain"],
+            path: "Sources/KazeHardware",
+            linkerSettings: [.linkedFramework("IOKit")]
         ),
         .executableTarget(
-            name: "thermalforge",
+            name: "KazeHelper",
+            dependencies: ["KazeDomain", "KazeIPC", "KazeHardware"],
+            path: "Sources/KazeHelper"
+        ),
+        .executableTarget(
+            name: "KazeApp",
+            dependencies: ["KazeDomain", "KazeIPC"],
+            path: "Sources/KazeApp",
+            linkerSettings: [.linkedFramework("ServiceManagement")]
+        ),
+        .executableTarget(
+            name: "KazeCLI",
             dependencies: [
-                "ThermalForgeCore",
+                "KazeDomain",
+                "KazeIPC",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
-            path: "Sources/thermalforge"
+            path: "Sources/KazeCLI"
         ),
         .executableTarget(
-            name: "ThermalForgeApp",
-            dependencies: ["ThermalForgeCore"],
-            path: "Sources/ThermalForgeApp"
+            name: "KazeRecovery",
+            dependencies: ["KazeDomain", "KazeHardware"],
+            path: "Sources/KazeRecovery"
         ),
         .testTarget(
-            name: "ThermalForgeTests",
-            dependencies: ["ThermalForgeCore"],
-            path: "Tests/ThermalForgeTests"
+            name: "KazeDomainTests",
+            dependencies: ["KazeDomain"],
+            path: "Tests/KazeDomainTests"
+        ),
+        .testTarget(
+            name: "KazeIPCTests",
+            dependencies: ["KazeIPC"],
+            path: "Tests/KazeIPCTests"
+        ),
+        .testTarget(
+            name: "KazeHardwareTests",
+            dependencies: ["KazeHardware"],
+            path: "Tests/KazeHardwareTests"
         ),
     ]
 )

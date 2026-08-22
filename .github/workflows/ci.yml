@@ -6,14 +6,40 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     runs-on: macos-15
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Build
-        run: swift build
+      - name: Toolchain
+        run: swift --version
+
+      - name: Resolve locked dependencies
+        run: |
+          swift package resolve
+          git diff --exit-code -- Package.resolved
 
       - name: Test
-        run: swift test
+        run: swift test --parallel
+
+      - name: Release build
+        run: swift build -c release
+
+      - name: Package ad-hoc verification build
+        run: ./Scripts/package-app.sh --adhoc --output "$RUNNER_TEMP/Kaze.app"
+
+      - name: Verify bundle
+        run: |
+          codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP/Kaze.app"
+          plutil -lint "$RUNNER_TEMP/Kaze.app/Contents/Info.plist"
+          plutil -lint "$RUNNER_TEMP/Kaze.app/Contents/Library/LaunchDaemons/com.producerguy.kaze.helper.plist"

@@ -1,17 +1,20 @@
-#!/bin/bash
-#
-# ThermalForge Uninstall
-# Removes everything: daemon, app, CLI.
-#
+#!/bin/zsh
 
-set -e
+set -euo pipefail
 
-echo "Uninstalling ThermalForge..."
+APP_PATH="/Applications/Kaze.app"
 
-sudo /usr/local/bin/thermalforge uninstall 2>/dev/null || true
-sudo rm -f /usr/local/bin/thermalforge
-sudo rm -rf /Applications/ThermalForge.app
-rm -rf ~/Library/Logs/ThermalForge
-rm -rf ~/Library/Application\ Support/ThermalForge
+if launchctl print system/com.producerguy.kaze.helper >/dev/null 2>&1; then
+    print -u2 -- "The privileged helper is still registered."
+    print -u2 -- "Open Kaze, choose Apple Automatic, then choose Unregister."
+    exit 1
+fi
 
-echo "ThermalForge removed."
+if [[ ! -e "${APP_PATH}" ]]; then
+    print -- "Kaze is not installed."
+    exit 0
+fi
+
+TRASH_PATH="${HOME}/.Trash/Kaze-$(date +%Y%m%d-%H%M%S).app"
+mv -- "${APP_PATH}" "${TRASH_PATH}"
+print -- "Moved Kaze to ${TRASH_PATH}. It can be recovered from Trash."

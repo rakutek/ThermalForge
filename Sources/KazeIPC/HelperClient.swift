@@ -6,6 +6,7 @@ public enum HelperClientError: Error, Sendable, CustomStringConvertible {
     case invalidProxy
     case remote(HelperRPCError)
     case missingResult
+    case timedOut(seconds: Double)
 
     public var description: String {
         switch self {
@@ -13,6 +14,7 @@ public enum HelperClientError: Error, Sendable, CustomStringConvertible {
         case .invalidProxy: return "helper returned an invalid XPC proxy"
         case .remote(let error): return error.description
         case .missingResult: return "helper response had neither a result nor an error"
+        case .timedOut(let seconds): return "helper request timed out after \(seconds) seconds"
         }
     }
 }
@@ -38,13 +40,24 @@ public final class HelperClient: @unchecked Sendable {
         current?.invalidate()
     }
 
-    public func perform(_ operation: HelperOperation) async throws -> ControllerStatus {
+    public func perform(
+        _ operation: HelperOperation,
+        timeoutSeconds: Double = 5
+    ) async throws -> ControllerStatus {
+        guard timeoutSeconds.isFinite, timeoutSeconds > 0 else {
+            throw HelperClientError.timedOut(seconds: timeoutSeconds)
+        }
         let request = HelperRequest(operation: operation)
         let payload = try XPCCodec.encode(request)
         let connection = try activeConnection()
 
         return try await withCheckedThrowingContinuation { continuation in
             let gate = ContinuationGate(continuation)
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(
+                deadline: .now() + timeoutSeconds
+            ) {
+                gate.fail(HelperClientError.timedOut(seconds: timeoutSeconds))
+            }
             let proxyObject = connection.remoteObjectProxyWithErrorHandler { error in
                 gate.fail(HelperClientError.unavailable(error.localizedDescription))
             }

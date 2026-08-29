@@ -2,7 +2,7 @@ import Foundation
 
 public enum KazeVersion {
     public static let current = "2.0.0-alpha.1"
-    public static let protocolVersion = 3
+    public static let protocolVersion = 4
     public static let minimumMacOS = "14.0"
 }
 
@@ -155,6 +155,7 @@ public enum ControllerMode: String, Codable, Sendable, Equatable {
     case fixed
     case maximum
     case safetyMaximum
+    case safetyCooling
     case failSafeAutomatic
     case failSafeMaximum
     case unrecoveredFault
@@ -169,6 +170,7 @@ public enum ControllerMode: String, Codable, Sendable, Equatable {
         case .fixed: "Fixed RPM"
         case .maximum: "Maximum"
         case .safetyMaximum: "Safety Maximum"
+        case .safetyCooling: "Safety Cooling"
         case .failSafeAutomatic: "Fail-safe Automatic"
         case .failSafeMaximum: "Fail-safe Maximum"
         case .unrecoveredFault: "Unrecovered Fault"

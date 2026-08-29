@@ -98,9 +98,9 @@ public extension ProfileID {
                     ceilingTemperature: 85,
                     maximumFraction: 1,
                     shape: .sCurve,
-                    sustainedSeconds: 1,
-                    rampUpRPMPerSecond: 2_000,
-                    rampDownRPMPerSecond: 650
+                    sustainedSeconds: 2,
+                    rampUpRPMPerSecond: 1_200,
+                    rampDownRPMPerSecond: 500
                 )
             }
         }

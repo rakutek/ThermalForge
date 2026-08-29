@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import ServiceManagement
 import SwiftUI
 import KazeDomain
@@ -8,18 +9,27 @@ import KazeIPC
 final class AppState: ObservableObject {
     @Published private(set) var status: ControllerStatus?
     @Published private(set) var errorMessage: String?
+    @Published private(set) var controlErrorMessage: String?
     @Published private(set) var helperRegistration = "Checking…"
     @Published private(set) var pendingIntent: ControlIntent?
     @Published var launchAtLogin = false
 
     private let client = HelperClient()
+    private let logger = Logger(subsystem: "com.producerguy.kaze", category: "lease")
     private var pollTask: Task<Void, Never>?
     private var renewalTask: Task<Void, Never>?
+    private var controlGeneration: UInt64 = 0
+    private var controlActivity: ControlActivity?
+
+    private let leaseSeconds: Double = 20
+    private let renewalIntervalSeconds: Double = 5
+    private let renewalRetryIntervalSeconds: Double = 0.5
+    private let renewalRequestTimeoutSeconds: Double = 2
 
     var modeDisplayName: String {
         if let status {
             switch status.mode {
-            case .safetyMaximum, .failSafeAutomatic, .failSafeMaximum, .unrecoveredFault:
+            case .safetyMaximum, .safetyCooling, .failSafeAutomatic, .failSafeMaximum, .unrecoveredFault:
                 return status.mode.displayName
             default:
                 break
@@ -38,6 +48,7 @@ final class AppState: ObservableObject {
     deinit {
         pollTask?.cancel()
         renewalTask?.cancel()
+        controlActivity?.end()
         client.invalidate()
     }
 
@@ -49,15 +60,19 @@ final class AppState: ObservableObject {
             }
             errorMessage = nil
         } catch {
-            let error = error as NSError
-            errorMessage = "Helper registration failed (\(error.domain) \(error.code)): \(error.localizedDescription)"
+            let registrationError = error as NSError
+            errorMessage = "Helper registration failed (\(registrationError.domain) \(registrationError.code)): \(registrationError.localizedDescription)"
+            logger.error(
+                "helper_registration_failed domain=\(registrationError.domain, privacy: .public) code=\(registrationError.code, privacy: .public)"
+            )
         }
         refreshRegistrationStatus()
     }
 
     func unregisterHelper() {
-        renewalTask?.cancel()
-        renewalTask = nil
+        stopRenewing()
+        controlGeneration &+= 1
+        controlErrorMessage = nil
         Task {
             do {
                 let service = SMAppService.daemon(plistName: IPCConstants.launchDaemonPlistName)
@@ -99,50 +114,125 @@ final class AppState: ObservableObject {
     }
 
     func automatic() {
-        renewalTask?.cancel()
-        renewalTask = nil
+        stopRenewing()
+        controlGeneration &+= 1
+        let generation = controlGeneration
+        controlErrorMessage = nil
         pendingIntent = .automatic
         Task {
-            await runOperation(.resetAutomatic)
-            pendingIntent = nil
+            do {
+                let newStatus = try await client.perform(.resetAutomatic)
+                guard generation == controlGeneration else { return }
+                status = newStatus
+                errorMessage = nil
+            } catch {
+                guard generation == controlGeneration else { return }
+                errorMessage = String(describing: error)
+            }
+            if generation == controlGeneration { pendingIntent = nil }
         }
     }
 
     func disconnect() {
-        renewalTask?.cancel()
+        stopRenewing()
+        controlGeneration &+= 1
         pollTask?.cancel()
         client.invalidate()
     }
 
     private func acquire(_ intent: ControlIntent) {
-        renewalTask?.cancel()
-        renewalTask = nil
+        stopRenewing()
+        controlGeneration &+= 1
+        let generation = controlGeneration
+        controlErrorMessage = nil
         pendingIntent = intent
         Task {
-            defer { pendingIntent = nil }
+            defer {
+                if generation == controlGeneration { pendingIntent = nil }
+            }
             do {
-                let newStatus = try await client.perform(.acquire(intent: intent, leaseSeconds: 20))
+                let newStatus = try await client.perform(
+                    .acquire(intent: intent, leaseSeconds: leaseSeconds)
+                )
+                guard generation == controlGeneration else { return }
                 status = newStatus
                 errorMessage = nil
-                if let leaseID = newStatus.leaseID { startRenewing(leaseID) }
+                guard let leaseID = newStatus.leaseID,
+                      let expiresAt = newStatus.leaseExpiresAtUptimeNanoseconds else {
+                    controlErrorMessage = "The helper did not return a control lease."
+                    return
+                }
+                startRenewing(leaseID, expiresAt: expiresAt, generation: generation)
             } catch {
+                guard generation == controlGeneration else { return }
                 errorMessage = String(describing: error)
             }
         }
     }
 
-    private func startRenewing(_ leaseID: UUID) {
-        renewalTask?.cancel()
+    private func startRenewing(_ leaseID: UUID, expiresAt: UInt64, generation: UInt64) {
+        stopRenewing()
+        beginControlActivity()
         renewalTask = Task { [weak self] in
+            var deadline = expiresAt
+            var failureCount = 0
+            var nextDelay = self?.renewalIntervalSeconds ?? 5
+
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(5))
-                guard !Task.isCancelled, let self else { return }
                 do {
-                    self.status = try await self.client.perform(.renew(leaseID: leaseID))
-                    self.errorMessage = nil
+                    try await Task.sleep(for: .seconds(nextDelay))
                 } catch {
-                    self.errorMessage = "Control lease was lost: \(error)"
                     return
+                }
+                guard !Task.isCancelled, let self,
+                      generation == self.controlGeneration else { return }
+
+                do {
+                    let renewed = try await self.client.perform(
+                        .renew(leaseID: leaseID),
+                        timeoutSeconds: self.renewalRequestTimeoutSeconds
+                    )
+                    guard !Task.isCancelled, generation == self.controlGeneration else { return }
+                    guard renewed.leaseID == leaseID,
+                          let renewedDeadline = renewed.leaseExpiresAtUptimeNanoseconds else {
+                        self.recordLostLease(
+                            reason: "the helper no longer owns this lease",
+                            generation: generation
+                        )
+                        return
+                    }
+
+                    if failureCount > 0 {
+                        self.logger.notice(
+                            "lease_renew_recovered failures=\(failureCount, privacy: .public)"
+                        )
+                    }
+                    self.status = renewed
+                    self.controlErrorMessage = nil
+                    deadline = renewedDeadline
+                    failureCount = 0
+                    nextDelay = self.renewalIntervalSeconds
+                } catch {
+                    guard !Task.isCancelled, generation == self.controlGeneration else { return }
+                    failureCount += 1
+                    let remaining = self.remainingNanoseconds(until: deadline)
+                    let errorDescription = String(describing: error)
+
+                    self.logger.error(
+                        "lease_renew_failed attempt=\(failureCount, privacy: .public) remaining_ms=\(remaining / 1_000_000, privacy: .public) error=\(errorDescription, privacy: .public)"
+                    )
+
+                    if self.isTerminalLeaseError(error) || remaining == 0 {
+                        self.recordLostLease(reason: errorDescription, generation: generation)
+                        return
+                    }
+
+                    self.controlErrorMessage = "Control connection is unstable; retrying lease renewal (\(failureCount))."
+                    let remainingSeconds = Double(remaining) / 1_000_000_000
+                    nextDelay = min(
+                        self.renewalRetryIntervalSeconds,
+                        max(remainingSeconds / 2, 0.05)
+                    )
                 }
             }
         }
@@ -168,6 +258,41 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func stopRenewing() {
+        renewalTask?.cancel()
+        renewalTask = nil
+        endControlActivity()
+    }
+
+    private func beginControlActivity() {
+        guard controlActivity == nil else { return }
+        controlActivity = ControlActivity()
+    }
+
+    private func endControlActivity() {
+        guard let controlActivity else { return }
+        controlActivity.end()
+        self.controlActivity = nil
+    }
+
+    private func remainingNanoseconds(until deadline: UInt64) -> UInt64 {
+        let now = DispatchTime.now().uptimeNanoseconds
+        return deadline > now ? deadline - now : 0
+    }
+
+    private func isTerminalLeaseError(_ error: Error) -> Bool {
+        guard case HelperClientError.remote(let remote) = error else { return false }
+        return remote.code == "lease-not-owned" || remote.code == "lease-expired"
+    }
+
+    private func recordLostLease(reason: String, generation: UInt64) {
+        guard generation == controlGeneration else { return }
+        logger.error("lease_control_lost reason=\(reason, privacy: .public)")
+        controlErrorMessage = "Control lease ended: \(reason)"
+        renewalTask = nil
+        endControlActivity()
+    }
+
     private func refreshRegistrationStatus() {
         let service = SMAppService.daemon(plistName: IPCConstants.launchDaemonPlistName)
         helperRegistration = switch service.status {
@@ -176,6 +301,32 @@ final class AppState: ObservableObject {
         case .requiresApproval: "Needs approval"
         case .notFound: "Not registered"
         @unknown default: "Unknown"
+        }
+    }
+}
+
+private final class ControlActivity: @unchecked Sendable {
+    private let lock = NSLock()
+    private var token: NSObjectProtocol?
+
+    init() {
+        token = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .suddenTerminationDisabled, .automaticTerminationDisabled],
+            reason: "Maintain the active Kaze fan-control lease"
+        )
+    }
+
+    deinit {
+        end()
+    }
+
+    func end() {
+        lock.lock()
+        let current = token
+        token = nil
+        lock.unlock()
+        if let current {
+            ProcessInfo.processInfo.endActivity(current)
         }
     }
 }

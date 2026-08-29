@@ -18,6 +18,7 @@ final class SafetyControllerTests: XCTestCase {
         let (controller, _) = makeController(hardware)
         controller.start(startTimer: false)
         controller.tickNow()
+        _ = try controller.acquire(intent: .fixedRPM(2_000), ownerSessionID: UUID(), leaseSeconds: 20)
 
         hardware.temperatures["TH0A"] = 81
         controller.tickNow()
@@ -27,9 +28,24 @@ final class SafetyControllerTests: XCTestCase {
         XCTAssertEqual(hardware.currentFans.map(\.targetRPM), [6_000, 5_500])
     }
 
-    func testThermalOverrideRevokesLeaseAndRequiresExplicitReacquisition() throws {
+    func testOverLimitSensorDoesNotSeizeVerifiedAppleAutomaticControl() throws {
         let hardware = try MockHardware()
         let (controller, _) = makeController(hardware)
+        controller.start(startTimer: false)
+        controller.tickNow()
+
+        hardware.temperatures["TH0A"] = 81
+        controller.tickNow()
+
+        XCTAssertEqual(controller.status().mode, .automatic)
+        XCTAssertNil(controller.status().fault)
+        XCTAssertEqual(hardware.maximumCount, 0)
+        XCTAssertTrue(hardware.currentFans.allSatisfy { $0.mode.isAutomatic })
+    }
+
+    func testThermalOverrideRevokesLeaseAndRequiresExplicitReacquisition() throws {
+        let hardware = try MockHardware()
+        let (controller, clock) = makeController(hardware)
         controller.start(startTimer: false)
         controller.tickNow()
         _ = try controller.acquire(intent: .fixedRPM(2_000), ownerSessionID: UUID(), leaseSeconds: 20)
@@ -44,9 +60,112 @@ final class SafetyControllerTests: XCTestCase {
         hardware.temperatures["TH0A"] = 70
         controller.tickNow()
 
-        XCTAssertEqual(controller.status().mode, .automatic)
+        XCTAssertEqual(controller.status().mode, .safetyCooling)
         XCTAssertEqual(controller.status().intent, .automatic)
+        XCTAssertTrue(hardware.currentFans.allSatisfy { $0.mode == .manual })
+
+        for _ in 0..<4 where controller.status().mode != .automatic {
+            clock.now += 1_000_000_000
+            controller.tickNow()
+        }
+
+        XCTAssertEqual(controller.status().mode, .automatic)
         XCTAssertTrue(hardware.currentFans.allSatisfy { $0.mode.isAutomatic })
+    }
+
+    func testThermalRecoveryRequiresHysteresisAndConsecutiveCoolSamples() throws {
+        let hardware = try MockHardware()
+        let (controller, clock) = makeController(
+            hardware,
+            healthySamplesBeforeResume: 2,
+            thermalRecoveryRampRPMPerSecond: 10_000
+        )
+        controller.start(startTimer: false)
+        for _ in 0..<3 {
+            clock.now += 250_000_000
+            controller.tickNow()
+        }
+        _ = try controller.acquire(intent: .fixedRPM(2_000), ownerSessionID: UUID(), leaseSeconds: 20)
+        let restoresBeforeOverride = hardware.restoreCount
+
+        hardware.temperatures["TH0A"] = 81
+        clock.now += 250_000_000
+        controller.tickNow()
+        XCTAssertEqual(controller.status().mode, .safetyMaximum)
+        XCTAssertEqual(hardware.maximumCount, 1)
+
+        // Below the hard limit but above the 5°C release hysteresis: remain at
+        // maximum instead of handing control back and oscillating.
+        hardware.temperatures["TH0A"] = 79
+        clock.now += 250_000_000
+        controller.tickNow()
+        XCTAssertEqual(controller.status().mode, .safetyMaximum)
+        XCTAssertEqual(hardware.restoreCount, restoresBeforeOverride)
+        XCTAssertEqual(hardware.maximumCount, 1)
+
+        // One cool sample is insufficient, and a warmer sample resets the run.
+        hardware.temperatures["TH0A"] = 74
+        clock.now += 250_000_000
+        controller.tickNow()
+        XCTAssertEqual(controller.status().mode, .safetyMaximum)
+
+        hardware.temperatures["TH0A"] = 79
+        clock.now += 250_000_000
+        controller.tickNow()
+        XCTAssertEqual(controller.status().mode, .safetyMaximum)
+
+        hardware.temperatures["TH0A"] = 74
+        clock.now += 250_000_000
+        controller.tickNow()
+        XCTAssertEqual(controller.status().mode, .safetyMaximum)
+
+        clock.now += 250_000_000
+        controller.tickNow()
+        XCTAssertEqual(controller.status().mode, .safetyCooling)
+        XCTAssertEqual(hardware.restoreCount, restoresBeforeOverride)
+
+        clock.now += 250_000_000
+        controller.tickNow()
+        XCTAssertEqual(controller.status().mode, .safetyCooling)
+        XCTAssertLessThan(hardware.currentFans[0].targetRPM, 6_000)
+        XCTAssertLessThan(hardware.currentFans[1].targetRPM, 5_500)
+
+        clock.now += 250_000_000
+        controller.tickNow()
+        XCTAssertEqual(controller.status().mode, .automatic)
+        XCTAssertNil(controller.status().fault)
+        XCTAssertEqual(hardware.restoreCount, restoresBeforeOverride + 1)
+    }
+
+    func testThermalRecoveryReturnsDirectlyToMaximumWhenTemperatureRebounds() throws {
+        let hardware = try MockHardware()
+        let (controller, clock) = makeController(hardware)
+        controller.start(startTimer: false)
+        controller.tickNow()
+        _ = try controller.acquire(intent: .fixedRPM(2_000), ownerSessionID: UUID(), leaseSeconds: 20)
+
+        hardware.temperatures["TH0A"] = 81
+        clock.now += 250_000_000
+        controller.tickNow()
+        XCTAssertEqual(controller.status().mode, .safetyMaximum)
+
+        hardware.temperatures["TH0A"] = 70
+        clock.now += 250_000_000
+        controller.tickNow()
+        XCTAssertEqual(controller.status().mode, .safetyCooling)
+
+        clock.now += 250_000_000
+        controller.tickNow()
+        XCTAssertLessThan(hardware.currentFans[0].targetRPM, 6_000)
+
+        hardware.temperatures["TH0A"] = 79
+        clock.now += 250_000_000
+        controller.tickNow()
+
+        XCTAssertEqual(controller.status().mode, .safetyMaximum)
+        XCTAssertEqual(hardware.currentFans.map(\.targetRPM), [6_000, 5_500])
+        XCTAssertEqual(hardware.maximumCount, 2)
+        XCTAssertTrue(hardware.currentFans.allSatisfy { $0.mode == .manual })
     }
 
     func testStaleRequiredSensorRestoresAutomatic() throws {
@@ -108,6 +227,62 @@ final class SafetyControllerTests: XCTestCase {
             XCTAssertEqual(status.mode.displayName, profile.rawValue.capitalized)
             XCTAssertEqual(status.intent, .profile(profile))
         }
+    }
+
+    func testSmartProfileDoesNotChaseDieSensorJitter() throws {
+        let hardware = try MockHardware()
+        let (controller, clock) = makeController(hardware)
+        controller.start(startTimer: false)
+        hardware.temperatures["TC0P"] = 68
+        controller.tickNow()
+        _ = try controller.acquire(intent: .profile(.smart), ownerSessionID: UUID(), leaseSeconds: 30)
+
+        // Settle: the profile debounces for sustainedSeconds before taking manual control,
+        // then the ramp limiter needs a few more ticks to reach the curve target.
+        for index in 0..<40 {
+            clock.now += 250_000_000
+            hardware.temperatures["TC0P"] = index.isMultiple(of: 2) ? 68 : 71
+            controller.tickNow()
+        }
+
+        let writesBeforeObservation = hardware.manualCount
+        var observed: [Int] = []
+        for index in 0..<24 {
+            clock.now += 250_000_000
+            hardware.temperatures["TC0P"] = index.isMultiple(of: 2) ? 68 : 71
+            controller.tickNow()
+            observed.append(hardware.currentFans[0].targetRPM)
+        }
+
+        XCTAssertEqual(controller.status().mode, .smart)
+        XCTAssertTrue(hardware.currentFans.allSatisfy { $0.mode == .manual })
+        let spread = (observed.max() ?? 0) - (observed.min() ?? 0)
+        XCTAssertLessThanOrEqual(spread, 100, "smart chased die sensor jitter: \(observed)")
+        XCTAssertLessThanOrEqual(hardware.manualCount - writesBeforeObservation, 1)
+    }
+
+    func testSmartProfileStillRampsUpOnSustainedTemperatureRise() throws {
+        let hardware = try MockHardware()
+        let (controller, clock) = makeController(hardware)
+        controller.start(startTimer: false)
+        hardware.temperatures["TC0P"] = 60
+        controller.tickNow()
+        _ = try controller.acquire(intent: .profile(.smart), ownerSessionID: UUID(), leaseSeconds: 30)
+
+        for _ in 0..<40 {
+            clock.now += 250_000_000
+            controller.tickNow()
+        }
+        let settled = hardware.currentFans[0].targetRPM
+
+        for index in 0..<24 {
+            clock.now += 250_000_000
+            hardware.temperatures["TC0P"] = 60 + Double(index + 1)
+            controller.tickNow()
+        }
+
+        XCTAssertEqual(controller.status().mode, .smart)
+        XCTAssertGreaterThan(hardware.currentFans[0].targetRPM, settled + 1_500)
     }
 
     func testActuationFailureNeverClaimsManualSuccess() throws {
@@ -276,7 +451,11 @@ final class SafetyControllerTests: XCTestCase {
         XCTAssertNil(controller.status().leaseID)
     }
 
-    private func makeController(_ hardware: MockHardware) -> (SafetyController, TestClock) {
+    private func makeController(
+        _ hardware: MockHardware,
+        healthySamplesBeforeResume: Int = 0,
+        thermalRecoveryRampRPMPerSecond: Double = 1_000
+    ) -> (SafetyController, TestClock) {
         let clock = TestClock()
         let controller = SafetyController(
             hardware: hardware,
@@ -284,7 +463,8 @@ final class SafetyControllerTests: XCTestCase {
                 tickIntervalSeconds: 0.25,
                 sensorStaleSeconds: 2,
                 maximumLeaseSeconds: 30,
-                healthySamplesBeforeResume: 0,
+                healthySamplesBeforeResume: healthySamplesBeforeResume,
+                thermalRecoveryRampRPMPerSecond: thermalRecoveryRampRPMPerSecond,
                 targetToleranceRPM: 100
             ),
             clock: { clock.now }
@@ -309,6 +489,7 @@ private final class MockHardware: ThermalHardware, @unchecked Sendable {
     var lieAboutActualReadback = false
     var restoreCount = 0
     var maximumCount = 0
+    var manualCount = 0
 
     init() throws {
         let fans = [
@@ -333,6 +514,7 @@ private final class MockHardware: ThermalHardware, @unchecked Sendable {
     }
 
     func applyManual(targetRPMs: [Int]) throws -> HardwareSample {
+        manualCount += 1
         if failManual { throw DomainError.hardwareFailure("injected manual failure") }
         currentFans = zip(inventory.fans, targetRPMs).map { limits, target in
             FanReading(

@@ -42,6 +42,8 @@ UI は安全機構ではない。アプリや CLI が停止しても、helper �
 5. manual mode へ移るには、連続した正常サンプルと有効な lease が必要になる。
 6. lease expiry、client disconnect、sleep/wake、センサー異常、SMC 異常のいずれでも fail-safe ladder を実行する。
 
+Kaze の manual control 中に温度上限へ達した場合は即座に `Safety Maximum` をラッチする。全センサーがそれぞれの上限より5°C以上低い状態を連続8サンプル確認した後だけ `Safety Cooling` へ移り、回転数を段階的に下げてから Apple automatic へ一度だけ引き渡す。冷却中に温度が戻れば、復帰判定を破棄して即座に maximum cooling へ戻る。すでに全 fan で Apple automatic が確認できている場合は、その安全制御をKazeが奪わず、温度超過を診断ログへ記録する。
+
 ```text
 verified Apple automatic
           │ failed

@@ -31,7 +31,7 @@ struct KazeApp: App {
 
     private var iconName: String {
         switch appState.status?.mode {
-        case .safetyMaximum, .failSafeMaximum, .unrecoveredFault:
+        case .safetyMaximum, .safetyCooling, .failSafeMaximum, .unrecoveredFault:
             "exclamationmark.triangle.fill"
         case .balanced, .performance, .smart, .fixed, .maximum:
             "fan.fill"

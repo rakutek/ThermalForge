@@ -26,6 +26,12 @@ struct MenuBarView: View {
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if let error = appState.controlErrorMessage {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             Divider()
 
@@ -101,7 +107,7 @@ struct MenuBarView: View {
     private var stateColor: Color {
         if appState.pendingIntent != nil { return .orange }
         return switch appState.status?.mode {
-        case .safetyMaximum, .failSafeMaximum, .unrecoveredFault: .red
+        case .safetyMaximum, .safetyCooling, .failSafeMaximum, .unrecoveredFault: .red
         case .maximum, .fixed, .balanced, .performance, .smart: .orange
         case .automatic, .failSafeAutomatic: .green
         default: .secondary

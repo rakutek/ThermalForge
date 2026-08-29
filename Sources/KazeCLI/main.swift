@@ -9,8 +9,40 @@ struct KazeCLI: AsyncParsableCommand {
         commandName: "kaze",
         abstract: "Secure fan control through the signed Kaze helper",
         version: KazeVersion.current,
-        subcommands: [Status.self, Automatic.self, Profile.self, Maximum.self, SetRPM.self, HelperInfo.self]
+        subcommands: [Status.self, Logs.self, Automatic.self, Profile.self, Maximum.self, SetRPM.self, HelperInfo.self]
     )
+}
+
+struct Logs: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Show Kaze helper safety transitions from the macOS unified log"
+    )
+
+    @Option(name: .long, help: "History window such as 30m, 2h, or 1d")
+    var last = "30m"
+
+    func run() async throws {
+        guard last.range(of: #"^[1-9][0-9]*[smhd]$"#, options: .regularExpression) != nil else {
+            throw ValidationError("--last must be a positive duration such as 30m, 2h, or 1d")
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/log")
+        process.arguments = [
+            "show",
+            "--style", "compact",
+            "--info",
+            "--last", last,
+            "--predicate", #"subsystem == "com.producerguy.kaze" AND ((process == "KazeHelper" AND category == "safety") OR (process == "KazeApp" AND category == "lease"))"#,
+        ]
+        process.standardOutput = FileHandle.standardOutput
+        process.standardError = FileHandle.standardError
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw ValidationError("macOS log command failed with status \(process.terminationStatus)")
+        }
+    }
 }
 
 struct Status: AsyncParsableCommand {

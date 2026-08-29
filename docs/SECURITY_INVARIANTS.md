@@ -10,7 +10,11 @@
 | manual control は一つの session だけが所有する | lease ownership tests |
 | 別 session は active lease を暗黙に置き換えられない | lease replacement test |
 | lease expiry / disconnect は automatic へ戻す | lease lifecycle tests |
-| stale / missing / over-limit sensor は maximum cooling にする | sensor fault tests |
+| stale / missing sensor は verified Apple automatic、またはその検証失敗時に maximum cooling へ戻す | sensor fault tests |
+| Apple automatic が確認済みなら over-limit sensor を理由に手動制御を奪わない | automatic thermal advisory test |
+| Kaze の manual control 中に over-limit sensor を検出したら maximum cooling にする | sensor fault tests |
+| thermal override は解除ヒステリシスと連続正常サンプルを満たすまで maximum cooling を維持する | thermal recovery tests |
+| thermal recovery の減速中に温度が戻れば即座に maximum cooling へ戻す | thermal recovery tests |
 | SMC false-success や readback mismatch を成功扱いしない | actuation fault tests |
 | target/mode が正しくても実回転が猶予時間内に追従しなければ解除する | fan response test |
 | RPM は全 fan の安全範囲の交差内だけを許す | RPM validation tests |

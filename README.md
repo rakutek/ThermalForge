@@ -56,6 +56,7 @@ Examples:
 
 ```bash
 kaze status --json
+kaze logs --last 30m
 kaze profile smart --duration 3600
 kaze max --duration 600
 kaze set 4000 --duration 600

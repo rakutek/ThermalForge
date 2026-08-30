@@ -59,7 +59,7 @@ mkdir -p -- \
     "${STAGING_PATH}/Contents/Library/Utilities"
 
 cp -- "${BUILD_DIR}/KazeApp" "${STAGING_PATH}/Contents/MacOS/KazeApp"
-cp -- "${BUILD_DIR}/KazeHelper" "${STAGING_PATH}/Contents/MacOS/KazeHelper"
+cp -- "${BUILD_DIR}/KazeHelper" "${STAGING_PATH}/Contents/Resources/KazeHelper"
 cp -- "${BUILD_DIR}/kaze" "${STAGING_PATH}/Contents/Library/Utilities/kaze"
 cp -- "${BUILD_DIR}/kaze-recovery" "${STAGING_PATH}/Contents/Library/Utilities/kaze-recovery"
 cp -- "${PROJECT_DIR}/Packaging/Info.plist" "${STAGING_PATH}/Contents/Info.plist"
@@ -81,13 +81,14 @@ if (( ! ADHOC )); then
 fi
 
 codesign "${SIGN_ARGS[@]}" --identifier com.producerguy.kaze.helper \
-    "${STAGING_PATH}/Contents/MacOS/KazeHelper"
+    "${STAGING_PATH}/Contents/Resources/KazeHelper"
 codesign "${SIGN_ARGS[@]}" --identifier com.producerguy.kaze.cli \
     "${STAGING_PATH}/Contents/Library/Utilities/kaze"
 codesign "${SIGN_ARGS[@]}" --identifier com.producerguy.kaze.recovery \
     "${STAGING_PATH}/Contents/Library/Utilities/kaze-recovery"
 codesign "${SIGN_ARGS[@]}" --identifier com.producerguy.kaze "${STAGING_PATH}"
 codesign --verify --deep --strict --verbose=2 "${STAGING_PATH}"
+codesign --verify --strict --verbose=2 "${STAGING_PATH}/Contents/Resources/KazeHelper"
 
 if (( ! ADHOC )); then
     [[ ! -e "${STAGING_PATH}/Contents/Resources/development-build" ]] || {

@@ -114,7 +114,13 @@ public final class SafetyController: @unchecked Sendable {
     private var riseAnchorAt: UInt64?
     private var smartRiseBoost: Double = 0
     private var lastProfileFraction: Double?
+    private var telemetryHistory: [TelemetrySample] = []
+    private var lastTelemetrySampleAt: UInt64?
     private var started = false
+
+    private static let telemetryIntervalNanoseconds: UInt64 = 1_000_000_000
+    private static let telemetryRetentionNanoseconds: UInt64 = 3_600_000_000_000
+    public static let maximumTelemetryPoints = 180
 
     public init(
         hardware: ThermalHardware,
@@ -137,7 +143,9 @@ public final class SafetyController: @unchecked Sendable {
         queue.sync {
             guard !started else { return }
             started = true
-            enterFailSafeLocked(code: "startup-recovery", message: "establishing a verified startup state", now: clock())
+            let now = clock()
+            enterFailSafeLocked(code: "startup-recovery", message: "establishing a verified startup state", now: now)
+            recordTelemetryLocked(now: now)
             if startTimer { installTimerLocked() }
         }
     }
@@ -265,6 +273,26 @@ public final class SafetyController: @unchecked Sendable {
         queue.sync { statusLocked() }
     }
 
+    /// Returns at most `maximumPoints` read-only records from the helper's
+    /// in-memory, one-hour telemetry log. The response remains below the XPC
+    /// payload limit even on machines with the maximum supported fan count.
+    public func telemetry(windowSeconds: Double, maximumPoints: Int) throws -> [TelemetrySample] {
+        try queue.sync {
+            guard windowSeconds.isFinite, (10...3_600).contains(windowSeconds) else {
+                throw DomainError.invalidTelemetryWindow(windowSeconds)
+            }
+            guard (2...Self.maximumTelemetryPoints).contains(maximumPoints) else {
+                throw DomainError.invalidTelemetryPointLimit(maximumPoints)
+            }
+
+            let now = clock()
+            let windowNanoseconds = UInt64((windowSeconds * 1_000_000_000).rounded())
+            let cutoff = now > windowNanoseconds ? now - windowNanoseconds : 0
+            let records = telemetryHistory.filter { $0.sampledAtUptimeNanoseconds >= cutoff }
+            return downsampleTelemetryLocked(records, maximumPoints: maximumPoints)
+        }
+    }
+
     /// Deterministic entry point used by fault-injection tests and wake handling.
     public func tickNow() {
         queue.sync { tickLocked(now: clock(), forceActuation: false) }
@@ -296,6 +324,8 @@ public final class SafetyController: @unchecked Sendable {
     }
 
     private func tickLocked(now: UInt64, forceActuation: Bool) {
+        defer { recordTelemetryLocked(now: now) }
+
         if let lease, lease.expiresAt <= now {
             expireLeaseLocked(now: now)
             return
@@ -917,6 +947,84 @@ public final class SafetyController: @unchecked Sendable {
             latestSample: latestSample,
             fault: fault
         )
+    }
+
+    private func recordTelemetryLocked(now: UInt64) {
+        guard let sample = latestSample else { return }
+        if let previous = lastTelemetrySampleAt,
+           now >= previous,
+           now - previous < Self.telemetryIntervalNanoseconds {
+            return
+        }
+
+        var peaks: [SensorFamily: Double] = [:]
+        let descriptorsByKey = Dictionary(
+            uniqueKeysWithValues: hardware.inventory.sensors.map { ($0.key, $0) }
+        )
+        for (key, value) in sample.temperatures {
+            guard let family = descriptorsByKey[key]?.family else { continue }
+            peaks[family] = max(peaks[family] ?? value, value)
+        }
+
+        telemetryHistory.append(
+            TelemetrySample(
+                sampledAtUptimeNanoseconds: now,
+                mode: mode,
+                peakTemperatures: peaks,
+                fanActualRPMs: sample.fans.map(\.actualRPM),
+                fanTargetRPMs: sample.fans.map(\.targetRPM),
+                faultCode: fault?.code
+            )
+        )
+        lastTelemetrySampleAt = now
+
+        let cutoff = now > Self.telemetryRetentionNanoseconds
+            ? now - Self.telemetryRetentionNanoseconds
+            : 0
+        if let firstRetained = telemetryHistory.firstIndex(where: {
+            $0.sampledAtUptimeNanoseconds >= cutoff
+        }), firstRetained > telemetryHistory.startIndex {
+            telemetryHistory.removeFirst(firstRetained)
+        }
+    }
+
+    private func downsampleTelemetryLocked(
+        _ records: [TelemetrySample],
+        maximumPoints: Int
+    ) -> [TelemetrySample] {
+        guard records.count > maximumPoints else { return records }
+        guard maximumPoints > 2 else { return [records[0], records[records.count - 1]] }
+
+        // Keep both edges and retain the hottest point in each interior bucket.
+        // Fan delta and mode transitions break thermal ties, so meaningful control
+        // changes remain visible without allowing an unbounded IPC response.
+        var result = [records[0]]
+        let interiorCount = records.count - 2
+        let bucketCount = maximumPoints - 2
+
+        for bucket in 0..<bucketCount {
+            let start = 1 + (bucket * interiorCount / bucketCount)
+            let end = 1 + ((bucket + 1) * interiorCount / bucketCount)
+            guard start < end else { continue }
+            let previous = result[result.count - 1]
+            let representative = records[start..<end].max { lhs, rhs in
+                telemetryImportance(lhs, relativeTo: previous)
+                    < telemetryImportance(rhs, relativeTo: previous)
+            } ?? records[start]
+            result.append(representative)
+        }
+        result.append(records[records.count - 1])
+        return result
+    }
+
+    private func telemetryImportance(_ sample: TelemetrySample, relativeTo previous: TelemetrySample) -> Double {
+        let hottest = sample.peakTemperatures.values.max() ?? -20
+        let fanDelta = zip(sample.fanActualRPMs, previous.fanActualRPMs)
+            .map { abs($0 - $1) }
+            .max() ?? 0
+        let stateWeight = sample.mode == previous.mode ? 0 : 200
+        let faultWeight = sample.faultCode == nil ? 0 : 400
+        return hottest + Double(fanDelta) / 100 + Double(stateWeight + faultWeight)
     }
 
     private func logModeTransitionLocked(from oldMode: ControllerMode, to newMode: ControllerMode) {

@@ -451,6 +451,62 @@ final class SafetyControllerTests: XCTestCase {
         XCTAssertNil(controller.status().leaseID)
     }
 
+    func testTelemetryAggregatesSensorFamiliesAtOneSecondIntervals() throws {
+        let hardware = try MockHardware()
+        let (controller, clock) = makeController(hardware)
+        controller.start(startTimer: false)
+
+        hardware.temperatures["TC0P"] = 57
+        hardware.temperatures["TG0P"] = 63
+        clock.now += 500_000_000
+        controller.tickNow()
+        XCTAssertEqual(try controller.telemetry(windowSeconds: 60, maximumPoints: 60).count, 1)
+
+        clock.now += 500_000_000
+        controller.tickNow()
+
+        let records = try controller.telemetry(windowSeconds: 60, maximumPoints: 60)
+        XCTAssertEqual(records.count, 2)
+        XCTAssertEqual(records.last?.peakTemperatures[.cpu], 57)
+        XCTAssertEqual(records.last?.peakTemperatures[.gpu], 63)
+        XCTAssertEqual(records.last?.peakTemperatures[.storage], 45)
+        XCTAssertEqual(records.last?.fanActualRPMs, [0, 0])
+        XCTAssertEqual(records.last?.mode, .automatic)
+    }
+
+    func testTelemetryDownsamplingRetainsThermalSpikeAndBoundsResult() throws {
+        let hardware = try MockHardware()
+        let (controller, clock) = makeController(hardware)
+        controller.start(startTimer: false)
+
+        for index in 0..<300 {
+            hardware.temperatures["TC0P"] = index == 151 ? 99 : 55
+            clock.now += 1_000_000_000
+            controller.tickNow()
+        }
+
+        let records = try controller.telemetry(windowSeconds: 3_600, maximumPoints: 20)
+        XCTAssertEqual(records.count, 20)
+        XCTAssertEqual(records.first?.sampledAtUptimeNanoseconds, 1_000_000_000)
+        XCTAssertEqual(records.last?.sampledAtUptimeNanoseconds, clock.now)
+        XCTAssertTrue(records.contains { $0.peakTemperatures[.cpu] == 99 })
+    }
+
+    func testTelemetryRejectsUnboundedQueries() throws {
+        let hardware = try MockHardware()
+        let (controller, _) = makeController(hardware)
+        controller.start(startTimer: false)
+
+        XCTAssertThrowsError(try controller.telemetry(windowSeconds: .infinity, maximumPoints: 60))
+        XCTAssertThrowsError(try controller.telemetry(windowSeconds: 3_601, maximumPoints: 60))
+        XCTAssertThrowsError(
+            try controller.telemetry(
+                windowSeconds: 60,
+                maximumPoints: SafetyController.maximumTelemetryPoints + 1
+            )
+        )
+    }
+
     private func makeController(
         _ hardware: MockHardware,
         healthySamplesBeforeResume: Int = 0,

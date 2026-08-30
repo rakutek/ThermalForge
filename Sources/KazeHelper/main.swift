@@ -4,8 +4,10 @@ import Foundation
 import KazeDomain
 import KazeHardware
 import KazeIPC
+import OSLog
 
 do {
+    let lifecycleLogger = Logger(subsystem: "com.producerguy.kaze", category: "lifecycle")
     guard geteuid() == 0 else {
         throw DomainError.hardwareFailure("the privileged helper must run as root")
     }
@@ -13,6 +15,7 @@ do {
     let hardware = try SMCFanHardware()
     let controller = SafetyController(hardware: hardware)
     controller.start()
+    lifecycleLogger.notice("helper_started version=\(KazeVersion.current, privacy: .public)")
 
     let listener = NSXPCListener(machServiceName: IPCConstants.machServiceName)
     let delegate = HelperListenerDelegate(controller: controller)
@@ -23,6 +26,18 @@ do {
 
     let powerMonitor = PowerMonitor(controller: controller)
     try powerMonitor.start()
+
+    let executableUpdateMonitor: ExecutableUpdateMonitor?
+    do {
+        executableUpdateMonitor = try ExecutableUpdateMonitor {
+            controller.shutdown()
+            Darwin.exit(0)
+        }
+        executableUpdateMonitor?.start()
+    } catch {
+        executableUpdateMonitor = nil
+        lifecycleLogger.error("helper_update_monitor_unavailable error=\(String(describing: error), privacy: .public)")
+    }
 
     signal(SIGTERM, SIG_IGN)
     signal(SIGINT, SIG_IGN)
@@ -40,7 +55,7 @@ do {
     interrupt.resume()
 
     // Strong references intentionally live for the daemon lifetime.
-    withExtendedLifetime((delegate, powerMonitor, termination, interrupt)) {
+    withExtendedLifetime((delegate, powerMonitor, executableUpdateMonitor, termination, interrupt)) {
         listener.activate()
         RunLoop.main.run()
     }

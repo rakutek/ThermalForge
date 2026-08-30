@@ -15,9 +15,16 @@ Kaze is a security-first fan controller for Apple Silicon Macs. The root helper 
 - A failed or stale sensor returns control to verified Apple automatic mode.
 - If automatic recovery cannot be verified, the helper attempts verified maximum cooling and keeps retrying.
 - Helper startup and wake always re-establish a known fail-safe state before accepting control.
+- Broken XPC connections are discarded and retried; replacing the app safely restarts the registered helper without losing approval.
 - Fixed-RPM requests must fit the reported range of every fan; non-finite values never reach SMC.
 
 See [Architecture](docs/ARCHITECTURE.md), [Threat model](docs/THREAT_MODEL.md), and [Security invariants](docs/SECURITY_INVARIANTS.md).
+
+## Live history graph
+
+Open Kaze from the menu bar to inspect the helper's recent thermal history. The graph can switch between peak temperature by sensor family and each fan's actual/target RPM, with 1 minute, 5 minute, 15 minute, and 1 hour ranges. Drag across the chart to inspect an exact sample.
+
+The helper records one compact sample per second in memory and retains one hour. Queries are read-only, capped at 180 points, and preserve thermal spikes while downsampling. History resets when the helper process restarts and is never written to disk.
 
 ## Build and test
 

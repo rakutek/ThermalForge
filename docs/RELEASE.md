@@ -22,7 +22,7 @@ script は nested executables を先に、app bundle を最後に hardened runti
 codesign --verify --deep --strict --verbose=2 dist/Kaze.app
 codesign -dv --verbose=4 dist/Kaze.app
 codesign -dv --verbose=4 \
-  dist/Kaze.app/Contents/MacOS/KazeHelper
+  dist/Kaze.app/Contents/Resources/KazeHelper
 plutil -lint dist/Kaze.app/Contents/Library/LaunchDaemons/com.producerguy.kaze.helper.plist
 ```
 

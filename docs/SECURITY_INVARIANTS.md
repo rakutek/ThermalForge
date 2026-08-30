@@ -20,6 +20,7 @@
 | RPM は全 fan の安全範囲の交差内だけを許す | RPM validation tests |
 | NaN / infinity を SMC encoding へ渡さない | hardware encoding tests |
 | IPC は bounded、versioned、typed である | IPC codec tests |
+| telemetry 履歴取得は read-only かつ 64 KiB 未満に bounded である | telemetry controller / IPC payload tests |
 | unsigned production client を許可しない | packaging code-sign verification |
 
 テスト用 hardware は failure injection を提供する。本番の安全分岐を mock 側で省略せず、write failure、read failure、false-success、stale sample、partial recovery を再現する。

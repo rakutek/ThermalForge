@@ -70,13 +70,20 @@ helper は加えて、接続プロセスの effective UID が `/dev/console` の
 
 制御権は XPC connection ごとのランダムな session ID に束縛される。lease は短時間で期限切れになり、所有 client だけが更新・変更できる。XPC connection が無効化された時点で helper は lease を破棄し、automatic mode へ戻す。
 
+## Telemetry history
+
+helper は、温度センサーを family ごとの最高値へ集約し、各 fan の actual / target RPM、制御 mode、fault code とともに1秒間隔でメモリへ記録する。保持期間は1時間であり、ディスクには永続化しない。
+
+app は読み取り専用 XPC operation で 1分、5分、15分、1時間の履歴を取得する。応答は最大180点に制限し、間引き時も温度スパイク、fault、mode 遷移、fan 変化を優先して残す。最大 fan・sensor 構成の応答が 64 KiB の IPC 上限を超えないことを codec test で検証する。telemetry operation は control intent、lease、hardware state を変更しない。
+
 ## Packaged layout
 
 ```text
 Kaze.app/
 └── Contents/
     ├── MacOS/
-    │   ├── KazeApp
+    │   └── KazeApp
+    ├── Resources/
     │   └── KazeHelper
     ├── Library/LaunchDaemons/
     │   └── com.producerguy.kaze.helper.plist
@@ -86,3 +93,5 @@ Kaze.app/
 ```
 
 helper は `SMAppService.daemon(plistName:)` だけで登録する。installer が `/Library/PrivilegedHelperTools` や `/Library/LaunchDaemons` を直接書き換える設計には戻さない。
+
+アプリ更新で bundle が置き換わると、実行中 helper の vnode とディスク上の署名対象が一致しなくなる。helper は executable の device / inode 変更を監視し、変更を検出したら Apple automatic を復元して終了する。登録と承認は維持され、`launchd` の KeepAlive が新しい署名済み helper を起動する。クライアントは transport error や timeout の発生した XPC connection を再利用せず、登録状態を再確認しながら新しい connection を作る。

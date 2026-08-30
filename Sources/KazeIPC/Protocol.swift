@@ -27,16 +27,25 @@ public struct HelperRequest: Codable, Sendable, Equatable {
 
 public enum HelperOperation: Codable, Sendable, Equatable {
     case status
+    case telemetry(windowSeconds: Double, maximumPoints: Int)
     case acquire(intent: ControlIntent, leaseSeconds: Double)
     case renew(leaseID: UUID)
     case resetAutomatic
+    case restartForUpdate
 }
 
 public struct HelperResult: Codable, Sendable, Equatable {
     public let status: ControllerStatus
+    public let telemetry: [TelemetrySample]?
 
     public init(status: ControllerStatus) {
         self.status = status
+        self.telemetry = nil
+    }
+
+    public init(status: ControllerStatus, telemetry: [TelemetrySample]) {
+        self.status = status
+        self.telemetry = telemetry
     }
 }
 

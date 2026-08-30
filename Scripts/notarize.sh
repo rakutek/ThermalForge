@@ -14,7 +14,7 @@ KEYCHAIN_PROFILE=$2
     exit 64
 }
 
-HELPER_PATH="${APP_PATH}/Contents/MacOS/KazeHelper"
+HELPER_PATH="${APP_PATH}/Contents/Resources/KazeHelper"
 CLI_PATH="${APP_PATH}/Contents/Library/Utilities/kaze"
 RECOVERY_PATH="${APP_PATH}/Contents/Library/Utilities/kaze-recovery"
 PLIST_PATH="${APP_PATH}/Contents/Library/LaunchDaemons/com.producerguy.kaze.helper.plist"

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import KazeDomain
 import KazeIPC
@@ -48,25 +49,39 @@ private final class HelperSession: NSObject, KazeHelperXPC {
     func perform(_ requestData: NSData, withReply reply: @escaping (NSData) -> Void) {
         let data = requestData as Data
         let response: HelperResponse
+        var restartAfterReply = false
         do {
             let request = try XPCCodec.decodeRequest(data)
             guard replayWindow.accept(request.requestID) else { throw XPCCodecError.duplicateRequest }
-            let status: ControllerStatus
+            let result: HelperResult
             switch request.operation {
             case .status:
-                status = controller.status()
+                result = HelperResult(status: controller.status())
+            case .telemetry(let windowSeconds, let maximumPoints):
+                let telemetry = try controller.telemetry(
+                    windowSeconds: windowSeconds,
+                    maximumPoints: maximumPoints
+                )
+                result = HelperResult(status: controller.status(), telemetry: telemetry)
             case .acquire(let intent, let leaseSeconds):
-                status = try controller.acquire(
-                    intent: intent,
-                    ownerSessionID: sessionID,
-                    leaseSeconds: leaseSeconds
+                result = HelperResult(
+                    status: try controller.acquire(
+                        intent: intent,
+                        ownerSessionID: sessionID,
+                        leaseSeconds: leaseSeconds
+                    )
                 )
             case .renew(let leaseID):
-                status = try controller.renew(leaseID: leaseID, ownerSessionID: sessionID)
+                result = HelperResult(
+                    status: try controller.renew(leaseID: leaseID, ownerSessionID: sessionID)
+                )
             case .resetAutomatic:
-                status = try controller.resetAutomatic()
+                result = HelperResult(status: try controller.resetAutomatic())
+            case .restartForUpdate:
+                result = HelperResult(status: try controller.resetAutomatic())
+                restartAfterReply = true
             }
-            response = HelperResponse(requestID: request.requestID, result: HelperResult(status: status))
+            response = HelperResponse(requestID: request.requestID, result: result)
         } catch {
             let requestID = (try? XPCCodec.decode(HelperRequest.self, from: data).requestID) ?? UUID()
             response = HelperResponse(
@@ -83,6 +98,13 @@ private final class HelperSession: NSObject, KazeHelperXPC {
             let fallback = "{\"protocolVersion\":\(KazeVersion.protocolVersion)}".data(using: .utf8) ?? Data()
             reply(fallback as NSData)
         }
+
+        if restartAfterReply {
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100)) { [controller] in
+                controller.shutdown()
+                Darwin.exit(0)
+            }
+        }
     }
 
     private func errorCode(_ error: Error) -> String {
@@ -90,6 +112,8 @@ private final class HelperSession: NSObject, KazeHelperXPC {
         case is XPCCodecError: return "invalid-request"
         case DomainError.invalidRPM: return "invalid-rpm"
         case DomainError.invalidLeaseDuration: return "invalid-lease"
+        case DomainError.invalidTelemetryWindow, DomainError.invalidTelemetryPointLimit:
+            return "invalid-telemetry-query"
         case DomainError.controlOwnedByAnotherSession: return "control-busy"
         case DomainError.leaseNotOwned: return "lease-not-owned"
         case DomainError.leaseExpired: return "lease-expired"

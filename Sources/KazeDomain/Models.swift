@@ -1,8 +1,8 @@
 import Foundation
 
 public enum KazeVersion {
-    public static let current = "2.0.0-alpha.1"
-    public static let protocolVersion = 4
+    public static let current = "2.0.0-alpha.2"
+    public static let protocolVersion = 6
     public static let minimumMacOS = "14.0"
 }
 
@@ -221,6 +221,36 @@ public struct ControllerStatus: Codable, Sendable, Equatable {
     }
 }
 
+/// A compact, bounded telemetry record retained by the helper for graphing.
+/// Temperatures are the hottest value in each sensor family; fan arrays follow
+/// the inventory's stable, index-sorted order.
+public struct TelemetrySample: Codable, Sendable, Equatable, Identifiable {
+    public var id: UInt64 { sampledAtUptimeNanoseconds }
+
+    public let sampledAtUptimeNanoseconds: UInt64
+    public let mode: ControllerMode
+    public let peakTemperatures: [SensorFamily: Double]
+    public let fanActualRPMs: [Int]
+    public let fanTargetRPMs: [Int]
+    public let faultCode: String?
+
+    public init(
+        sampledAtUptimeNanoseconds: UInt64,
+        mode: ControllerMode,
+        peakTemperatures: [SensorFamily: Double],
+        fanActualRPMs: [Int],
+        fanTargetRPMs: [Int],
+        faultCode: String?
+    ) {
+        self.sampledAtUptimeNanoseconds = sampledAtUptimeNanoseconds
+        self.mode = mode
+        self.peakTemperatures = peakTemperatures
+        self.fanActualRPMs = fanActualRPMs
+        self.fanTargetRPMs = fanTargetRPMs
+        self.faultCode = faultCode
+    }
+}
+
 public enum DomainError: Error, Sendable, Equatable, CustomStringConvertible {
     case invalidFanCount(Int)
     case invalidFanIndex(Int)
@@ -233,6 +263,8 @@ public enum DomainError: Error, Sendable, Equatable, CustomStringConvertible {
     case noTemperatureSensors
     case noDieTemperatureSensor
     case invalidLeaseDuration(Double)
+    case invalidTelemetryWindow(Double)
+    case invalidTelemetryPointLimit(Int)
     case controlOwnedByAnotherSession
     case leaseNotOwned
     case leaseExpired
@@ -252,6 +284,8 @@ public enum DomainError: Error, Sendable, Equatable, CustomStringConvertible {
         case .noTemperatureSensors: return "no temperature sensors discovered"
         case .noDieTemperatureSensor: return "no CPU or GPU temperature sensor discovered"
         case .invalidLeaseDuration(let value): return "invalid lease duration: \(value)"
+        case .invalidTelemetryWindow(let value): return "invalid telemetry window: \(value) seconds"
+        case .invalidTelemetryPointLimit(let value): return "invalid telemetry point limit: \(value)"
         case .controlOwnedByAnotherSession: return "control is owned by another connection"
         case .leaseNotOwned: return "lease is not owned by this connection"
         case .leaseExpired: return "lease expired"

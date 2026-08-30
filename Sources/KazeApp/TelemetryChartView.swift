@@ -9,7 +9,10 @@ struct TelemetryChartView: View {
     let errorMessage: String?
     let onSelectWindow: (TelemetryWindow) -> Void
 
-    @State private var metric: ChartMetric = .temperature
+    // MenuBarExtra may reconstruct its content as status polling publishes new
+    // values. Keep the selected metric outside that transient view lifetime so
+    // choosing Fan cannot immediately fall back to Temperature.
+    @AppStorage("KazeTelemetryChartMetric") private var metric: ChartMetric = .temperature
     @State private var sensorFamily: SensorFamily = .cpu
     @State private var fanOffset = 0
     @State private var selectedDate: Date?
@@ -83,28 +86,16 @@ struct TelemetryChartView: View {
 
     private var controls: some View {
         HStack(spacing: 8) {
-            HStack(spacing: 2) {
+            Picker("Chart metric", selection: $metric) {
                 ForEach(ChartMetric.allCases) { item in
-                    Button {
-                        metric = item
-                    } label: {
-                        Label(item.label, systemImage: item.icon)
-                            .font(.caption.weight(metric == item ? .semibold : .regular))
-                            .foregroundStyle(metric == item ? Color.primary : Color.secondary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background {
-                                Capsule()
-                                    .fill(metric == item ? Color.primary.opacity(0.09) : Color.clear)
-                            }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityValue(metric == item ? "Selected" : "Not selected")
+                    Label(item.label, systemImage: item.icon)
+                        .tag(item)
                 }
             }
-            .padding(2)
-            .background(Color.primary.opacity(0.045), in: Capsule())
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .controlSize(.small)
+            .accessibilityLabel("Chart metric")
 
             Button {
                 showsSeriesPicker = true

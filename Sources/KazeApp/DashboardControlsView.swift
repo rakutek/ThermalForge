@@ -47,26 +47,12 @@ struct CoolingModeControlView: View {
     let onMaximum: () -> Void
     let onAutomatic: () -> Void
 
-    private let thermalOrange = Color(red: 0.976, green: 0.451, blue: 0.086)
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 7) {
-                Text("COOLING MODE")
-                    .font(.caption.weight(.semibold))
-                    .tracking(0.8)
-                    .foregroundStyle(.secondary)
-
-                Spacer()
-
-                if pendingIntent != nil {
-                    ProgressView()
-                        .controlSize(.mini)
-                    Text("APPLYING")
-                        .font(.caption2.monospaced().weight(.medium))
-                        .foregroundStyle(.secondary)
-                }
-            }
+        VStack(alignment: .leading, spacing: 5) {
+            Text("MODE")
+                .font(.caption.weight(.semibold))
+                .tracking(0.8)
+                .foregroundStyle(.secondary)
 
             HStack(spacing: 6) {
                 HStack(spacing: 2) {
@@ -90,14 +76,9 @@ struct CoolingModeControlView: View {
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Cooling mode")
-
-            Text(modeDescription)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .help(modeDescription)
+            .accessibilityHint(modeDescription)
         }
+        .help(modeDescription)
         .padding(8)
         .background {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -138,11 +119,14 @@ struct CoolingModeControlView: View {
                     }
                 }
                 .overlay(alignment: .bottom) {
+                    // Every option keeps a faint accent so the row reads left
+                    // to right as quiet → hard cooling; the selected one is the
+                    // only solid, full-width mark.
                     Capsule()
                         .fill(option.accent)
-                        .frame(width: 18, height: 2)
+                        .frame(width: selected ? 18 : 11, height: 2)
                         .padding(.bottom, 2)
-                        .opacity(selected ? 1 : 0)
+                        .opacity(selected ? 1 : 0.55)
                 }
         }
         .buttonStyle(.plain)
@@ -218,10 +202,13 @@ struct StatusBannerView: View {
 
             if additionalCount > 0, let onShowAdditional {
                 Button(action: onShowAdditional) {
-                    Text("+\(additionalCount)")
-                        .font(.caption2.monospaced().weight(.semibold))
+                    Text("\(additionalCount)")
+                        .font(.system(size: 10, weight: .bold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.white)
+                        .frame(minWidth: 17, minHeight: 17)
+                        .background(color, in: Circle())
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.plain)
                 .help("Show \(additionalCount) additional alerts")
                 .accessibilityLabel("Show \(additionalCount) additional alerts")
             }
@@ -239,28 +226,25 @@ struct StatusBannerView: View {
 
 struct ControllerStatusPill: View {
     let title: String
+    let systemImage: String
     let color: Color
     let isWorking: Bool
 
     var body: some View {
-        HStack(spacing: 5) {
+        Group {
             if isWorking {
                 ProgressView()
                     .controlSize(.mini)
             } else {
-                Circle()
-                    .fill(color)
-                    .frame(width: 6, height: 6)
+                Image(systemName: systemImage)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(color)
             }
-            Text(title)
-                .font(.caption.monospaced().weight(.medium))
-                .lineLimit(1)
         }
-        .foregroundStyle(color)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(color.opacity(0.09), in: Capsule())
-        .accessibilityElement(children: .combine)
+        .frame(width: 28, height: 28)
+        .background(color.opacity(0.12), in: Circle())
+        .help(title)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("Controller status")
         .accessibilityValue(title)
     }
@@ -369,7 +353,7 @@ struct AppSettingsPopoverView: View {
     }
 }
 
-private enum CoolingModeOption: String, CaseIterable, Identifiable {
+enum CoolingModeOption: String, CaseIterable, Identifiable {
     case automatic
     case balanced
     case smart
@@ -423,11 +407,14 @@ private enum CoolingModeOption: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Ordered cool to hot so the mode row doubles as an intensity scale.
     var accent: Color {
         switch self {
-        case .automatic: .green
-        case .balanced, .smart, .performance, .maximum:
-            Color(red: 0.976, green: 0.451, blue: 0.086)
+        case .automatic: Color(red: 0.204, green: 0.780, blue: 0.349)
+        case .balanced: Color(red: 0.157, green: 0.682, blue: 0.616)
+        case .smart: Color(red: 0.949, green: 0.718, blue: 0.157)
+        case .performance: Color(red: 0.976, green: 0.451, blue: 0.086)
+        case .maximum: Color(red: 0.937, green: 0.267, blue: 0.267)
         }
     }
 }

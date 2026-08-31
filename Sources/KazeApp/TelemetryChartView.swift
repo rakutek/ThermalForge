@@ -39,16 +39,6 @@ struct TelemetryChartView: View {
                 }
             }
             .frame(minHeight: 72, maxHeight: .infinity)
-
-            if let errorMessage {
-                Label(errorMessage, systemImage: "exclamationmark.circle")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .help(errorMessage)
-                    .accessibilityLabel(errorMessage)
-            }
         }
         .padding(9)
         .frame(maxHeight: .infinity, alignment: .top)
@@ -78,16 +68,14 @@ struct TelemetryChartView: View {
                 .tracking(0.8)
                 .foregroundStyle(.secondary)
             Spacer(minLength: 4)
+            if let errorMessage {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .help(errorMessage)
+                    .accessibilityLabel(errorMessage)
+            }
             rangePicker
-            Rectangle()
-                .fill(Color.primary.opacity(0.10))
-                .frame(width: 1, height: 12)
-            Circle()
-                .fill(samples.isEmpty ? Color.secondary : Color.green)
-                .frame(width: 6, height: 6)
-            Text(samples.isEmpty ? "WAITING" : "LIVE")
-                .font(.caption2.monospaced().weight(.medium))
-                .foregroundStyle(.secondary)
         }
     }
 
@@ -218,7 +206,7 @@ struct TelemetryChartView: View {
                     .font(.system(size: 22, weight: .semibold, design: .rounded).monospacedDigit())
                     .foregroundStyle(thermalOrange)
                 if let values = temperatureValues, !values.isEmpty {
-                    Text("min \(values.min() ?? 0, specifier: "%.0f")°  max \(values.max() ?? 0, specifier: "%.0f")°")
+                    Text("\(values.min() ?? 0, specifier: "%.0f")–\(values.max() ?? 0, specifier: "%.0f")°")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -226,14 +214,19 @@ struct TelemetryChartView: View {
                 Text(fanActualValue(in: point).map { "\($0) RPM" } ?? "— RPM")
                     .font(.system(size: 22, weight: .semibold, design: .rounded).monospacedDigit())
                     .foregroundStyle(coolingBlue)
+                // The swatch repeats the chart's dashed stroke, so the second
+                // number identifies itself as the target line.
                 if let target = fanTargetValue(in: point) {
-                    Text("target \(target)")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(thermalOrange)
+                    HStack(spacing: 5) {
+                        dashedSwatch(thermalOrange)
+                        Text("\(target)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(thermalOrange)
+                    }
                 }
             }
             Spacer()
-            if let point {
+            if selectedDate != nil, let point {
                 VStack(alignment: .trailing, spacing: 1) {
                     Text(point.date, format: .dateTime.hour().minute().second())
                     Text(point.sample.mode.displayName)
@@ -243,6 +236,17 @@ struct TelemetryChartView: View {
             }
         }
         .frame(height: 30)
+    }
+
+    private func dashedSwatch(_ color: Color) -> some View {
+        HStack(spacing: 2) {
+            ForEach(0..<3, id: \.self) { _ in
+                Capsule()
+                    .fill(color)
+                    .frame(width: 4, height: 2)
+            }
+        }
+        .accessibilityHidden(true)
     }
 
     private var temperatureChart: some View {
@@ -361,7 +365,7 @@ struct TelemetryChartView: View {
             Image(systemName: "waveform.path.ecg")
                 .font(.title2)
                 .foregroundStyle(thermalOrange)
-            Text(errorMessage == nil ? "Collecting the first history samples…" : "No history to display")
+            Text(errorMessage == nil ? "Collecting…" : "No data")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -568,7 +572,7 @@ private enum ChartMetric: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .temperature: "Temperature"
+        case .temperature: "Temp"
         case .fan: "Fan"
         }
     }

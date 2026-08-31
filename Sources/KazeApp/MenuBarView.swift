@@ -42,8 +42,8 @@ struct MenuBarView: View {
                             ProgressView().controlSize(.small)
                         }
                         Text(appState.isRecoveringHelper
-                            ? "Restoring the cooling controller…"
-                            : "Waiting for the cooling controller…")
+                            ? "Restoring…"
+                            : "Connecting…")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -81,6 +81,7 @@ struct MenuBarView: View {
 
             ControllerStatusPill(
                 title: appState.modeDisplayName,
+                systemImage: stateSymbol,
                 color: stateColor,
                 isWorking: appState.pendingIntent != nil || appState.isRecoveringHelper
             )
@@ -209,49 +210,49 @@ struct MenuBarView: View {
         case .safetyMaximum:
             return DashboardAlert(
                 id: "safety-maximum",
-                message: "Safety limit reached — fans are running at maximum.",
+                message: "Safety limit · Maximum cooling",
                 systemImage: "exclamationmark.triangle.fill",
                 color: .red,
-                help: faultHelp
+                help: faultHelp ?? "Safety limit reached. Fans are running at maximum."
             )
         case .safetyCooling:
             return DashboardAlert(
                 id: "safety-cooling",
-                message: "Temperatures are recovering — safety cooling remains active.",
+                message: "Cooling down · Safety control",
                 systemImage: "thermometer.high",
                 color: .red,
-                help: faultHelp
+                help: faultHelp ?? "Temperatures are recovering. Safety cooling remains active."
             )
         case .failSafeAutomatic:
             return DashboardAlert(
                 id: "fail-safe-automatic",
-                message: "Hardware control failed — Apple Automatic cooling is active.",
+                message: "Control failed · Apple Automatic",
                 systemImage: "exclamationmark.shield.fill",
                 color: .red,
-                help: faultHelp
+                help: faultHelp ?? "Hardware control failed. Apple Automatic cooling is active."
             )
         case .failSafeMaximum:
             return DashboardAlert(
                 id: "fail-safe-maximum",
-                message: "Hardware control failed — maximum cooling is active.",
+                message: "Control failed · Maximum cooling",
                 systemImage: "exclamationmark.shield.fill",
                 color: .red,
-                help: faultHelp
+                help: faultHelp ?? "Hardware control failed. Maximum cooling is active."
             )
         case .unrecoveredFault:
             return DashboardAlert(
                 id: "unrecovered-fault",
-                message: "Cooling control could not recover. Restore Apple Automatic.",
+                message: "Control offline",
                 systemImage: "xmark.shield.fill",
                 color: .red,
                 actionTitle: "Restore Auto",
                 action: appState.automatic,
-                help: faultHelp
+                help: faultHelp ?? "Cooling control could not recover. Restore Apple Automatic."
             )
         case .fixed:
             return DashboardAlert(
                 id: "fixed-control",
-                message: "Another Kaze client controls a fixed fan speed.",
+                message: "Fixed speed · Another Kaze client",
                 systemImage: "person.2.fill",
                 color: .orange,
                 actionTitle: "Restore Auto",
@@ -261,7 +262,7 @@ struct MenuBarView: View {
             if appState.hasExternalControlLease {
                 return DashboardAlert(
                     id: "external-control",
-                    message: "Another Kaze client currently owns cooling control.",
+                    message: "Controlled by another Kaze client",
                     systemImage: "person.2.fill",
                     color: .orange,
                     actionTitle: "Restore Auto",
@@ -286,6 +287,22 @@ struct MenuBarView: View {
         }
     }
 
+    /// Mirrors the menu bar icon: a filled fan whenever Kaze is driving the
+    /// hardware, a hollow one while Apple's controller is, and a shield or
+    /// warning when safety control has taken over.
+    private var stateSymbol: String {
+        switch appState.status?.mode {
+        case .safetyMaximum, .safetyCooling, .failSafeAutomatic, .failSafeMaximum:
+            "exclamationmark.triangle.fill"
+        case .unrecoveredFault:
+            "xmark.shield.fill"
+        case .balanced, .performance, .smart, .fixed, .maximum:
+            "fan.fill"
+        default:
+            "fan"
+        }
+    }
+
     private var stateColor: Color {
         switch appState.status?.mode {
         case .safetyMaximum, .safetyCooling, .failSafeAutomatic,
@@ -295,11 +312,11 @@ struct MenuBarView: View {
             break
         }
         if appState.pendingIntent != nil || appState.isRecoveringHelper { return .orange }
-        return switch appState.status?.mode {
-        case .maximum, .fixed, .balanced, .performance, .smart: .orange
-        case .automatic: .green
-        default: .secondary
-        }
+        // Same ramp as the mode row, so the pill and the selected mode always
+        // read as the same colour.
+        guard let intent = appState.status?.intent,
+              let option = CoolingModeOption(intent: intent) else { return .secondary }
+        return option.accent
     }
 }
 
@@ -318,7 +335,7 @@ private struct AlertDetailsPopover: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Additional alerts")
+            Text("Alerts")
                 .font(.headline)
 
             ForEach(alerts) { alert in

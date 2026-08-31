@@ -18,20 +18,16 @@ struct CurrentReadingsView: View {
 
             LazyVGrid(columns: fanColumns, spacing: 6) {
                 ForEach(sample.fans, id: \.index) { fan in
-                    FanReadingCell(fan: fan, isCompact: usesCompactFanGrid)
+                    FanReadingCell(
+                        fan: fan,
+                        limits: inventory.fans.first { $0.index == fan.index },
+                        isCompact: usesCompactFanGrid
+                    )
                 }
             }
 
-            HStack(spacing: 6) {
-                Text("THERMAL ZONES")
-                    .font(.caption2.weight(.semibold))
-                    .tracking(0.6)
-                    .foregroundStyle(.secondary)
-
-                Rectangle()
-                    .fill(Color.primary.opacity(0.08))
-                    .frame(height: 1)
-            }
+            Divider()
+                .padding(.vertical, 1)
 
             LazyVGrid(columns: temperatureColumns, spacing: 6) {
                 ForEach(temperatureSummaries) { summary in
@@ -64,28 +60,23 @@ struct CurrentReadingsView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Text("LIVE READINGS")
+            Text("NOW")
                 .font(.caption.weight(.semibold))
                 .tracking(0.8)
                 .foregroundStyle(.secondary)
 
-            Spacer(minLength: 4)
-
-            Text("\(sample.fans.count) fans · \(sensorDetailRows.count) sensors")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
+            Spacer()
 
             Button {
                 presentationState.toggle(.sensorDetails)
             } label: {
-                Label("Details", systemImage: "list.bullet")
-                    .font(.caption2.weight(.medium))
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 4)
+                Image(systemName: "list.bullet")
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(width: 24, height: 20)
                     .background(Color.primary.opacity(0.06), in: Capsule())
             }
             .buttonStyle(.plain)
-            .help("Show individual hardware sensors")
+            .help("Sensor details · \(sample.fans.count) fans · \(sensorDetailRows.count) sensors")
             .accessibilityLabel("Show individual sensor details")
             .popover(
                 isPresented: presentationState.binding(for: .sensorDetails),
@@ -100,6 +91,7 @@ struct CurrentReadingsView: View {
         readingFamilyOrder.compactMap { family in
             let rows = sensorDetailRows.filter { $0.family == family }
             guard !rows.isEmpty else { return nil }
+            let limits = rows.compactMap(\.safetyLimit)
             let headrooms = rows.compactMap { row -> Double? in
                 guard let value = row.value, let limit = row.safetyLimit else { return nil }
                 return limit - value
@@ -111,6 +103,7 @@ struct CurrentReadingsView: View {
             return TemperatureSummary(
                 family: family,
                 hottest: rows.compactMap(\.value).max(),
+                safetyLimit: limits.min(),
                 minimumHeadroom: headrooms.min(),
                 thermalLoad: CGFloat(min(max(loads.max() ?? 0, 0), 1)),
                 sensorCount: rows.count,
@@ -165,21 +158,51 @@ struct CurrentReadingsView: View {
 
 private struct FanReadingCell: View {
     let fan: FanReading
+    let limits: FanLimits?
     let isCompact: Bool
 
     private let coolingBlue = Color(red: 0.220, green: 0.741, blue: 0.973)
+    private let thermalOrange = Color(red: 0.976, green: 0.451, blue: 0.086)
 
     var body: some View {
-        Group {
-            if isCompact {
-                compactContent
-            } else {
-                regularContent
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                Image(systemName: "fan.fill")
+                    .font(.caption2)
+                    .foregroundStyle(coolingBlue)
+                Text(isCompact ? "F\(fan.index + 1)" : "Fan \(fan.index + 1)")
+                    .font(.caption.weight(.medium))
+                Spacer(minLength: 2)
+                if fan.mode == .unknown {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(thermalOrange)
+                        .help("Fan mode unavailable")
+                }
             }
+
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text("\(fan.actualRPM)")
+                    .font(
+                        .system(
+                            size: isCompact ? 15 : 17,
+                            weight: .semibold,
+                            design: .rounded
+                        ).monospacedDigit()
+                    )
+                if !isCompact {
+                    Text("rpm")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+
+            speedGauge
         }
         .padding(.horizontal, isCompact ? 6 : 8)
-        .padding(.vertical, 4)
-        .frame(maxWidth: .infinity, minHeight: isCompact ? 38 : 40, alignment: .leading)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, minHeight: isCompact ? 50 : 52, alignment: .leading)
         .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .help("Fan \(fan.index + 1) · \(fan.mode.readingsName) · target \(fan.targetRPM) RPM")
         .accessibilityElement(children: .combine)
@@ -187,53 +210,39 @@ private struct FanReadingCell: View {
         .accessibilityValue("\(fan.actualRPM) RPM, target \(fan.targetRPM) RPM")
     }
 
-    private var regularContent: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 5) {
-                fanLabel(longForm: true)
-                Spacer(minLength: 4)
-                Text(fan.mode.readingsName)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
+    /// The bar spans the fan's full range, the fill is the measured speed and
+    /// the tick is where the controller wants it. A gap between the two reads
+    /// as "still spinning up" without spelling it out.
+    private var speedGauge: some View {
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.primary.opacity(0.07))
+                    .frame(height: 4)
 
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text("\(fan.actualRPM)")
-                    .font(.system(size: 17, weight: .semibold, design: .rounded).monospacedDigit())
-                Text("RPM")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 4)
-                Text("Target \(fan.targetRPM)")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                Capsule()
+                    .fill(coolingBlue)
+                    .frame(width: max(3, width * fraction(of: fan.actualRPM)), height: 4)
+
+                RoundedRectangle(cornerRadius: 1, style: .continuous)
+                    .fill(thermalOrange)
+                    .frame(width: 2, height: 9)
+                    .offset(x: min(max(width * fraction(of: fan.targetRPM) - 1, 0), width - 2))
             }
+            .frame(width: width, height: proxy.size.height)
         }
+        .frame(height: 9)
+        .accessibilityHidden(true)
     }
 
-    private var compactContent: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            fanLabel(longForm: false)
-
-            HStack(alignment: .firstTextBaseline, spacing: 2) {
-                Text("\(fan.actualRPM)")
-                    .font(.system(size: 15, weight: .semibold, design: .rounded).monospacedDigit())
-                Spacer(minLength: 1)
-                Text("→\(fan.targetRPM)")
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-        }
+    private var scaleMaximum: Double {
+        if let limits { return Double(limits.maximumRPM) }
+        return Double(max(fan.actualRPM, fan.targetRPM, 1))
     }
 
-    private func fanLabel(longForm: Bool) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: "fan.fill")
-                .font(.caption2)
-                .foregroundStyle(coolingBlue)
-            Text(longForm ? "Fan \(fan.index + 1)" : "F\(fan.index + 1)")
-                .font(.caption.weight(.medium))
-        }
+    private func fraction(of rpm: Int) -> Double {
+        min(max(Double(rpm) / scaleMaximum, 0), 1)
     }
 }
 
@@ -244,7 +253,7 @@ private struct TemperatureReadingCell: View {
     private let safetyRed = Color(red: 0.937, green: 0.267, blue: 0.267)
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 4) {
                 Image(systemName: summary.family.readingsIcon)
                     .font(.system(size: 10, weight: .medium))
@@ -263,26 +272,24 @@ private struct TemperatureReadingCell: View {
 
             Text(summary.hottest.map { String(format: "%.1f°", $0) } ?? "—°")
                 .font(.system(size: 17, weight: .semibold, design: .rounded).monospacedDigit())
-                .foregroundStyle(summary.state == .danger ? safetyRed : Color.primary)
+                .foregroundStyle(valueColor)
 
-            Text(summary.headroomLabel)
-                .font(.system(size: 10, weight: summary.state == .normal ? .regular : .medium))
-                .foregroundStyle(headroomColor)
-                .lineLimit(1)
+            HStack(spacing: 5) {
+                headroomGauge
 
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.06))
-                    Capsule()
-                        .fill(statusColor)
-                        .frame(width: max(2, proxy.size.width * summary.thermalLoad))
+                if let limit = summary.safetyLimit {
+                    Text("\(Int(limit))°")
+                        .font(
+                            .system(size: 9, weight: .medium, design: .rounded)
+                                .monospacedDigit()
+                        )
+                        .foregroundStyle(summary.state == .normal ? Color.secondary : statusColor)
                 }
             }
-            .frame(height: 2)
         }
         .padding(.horizontal, 7)
-        .padding(.vertical, 4)
-        .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
         .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .help(summary.helpText)
         .accessibilityElement(children: .combine)
@@ -290,20 +297,55 @@ private struct TemperatureReadingCell: View {
         .accessibilityValue(summary.accessibilityValue)
     }
 
+    /// The track runs from cold to the safety limit printed at its end, and the
+    /// red band is the last few degrees before that limit. A fill that reaches
+    /// into the band *is* the warning — no signed number needed.
+    private var headroomGauge: some View {
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.primary.opacity(0.07))
+
+                if let dangerBand {
+                    Capsule()
+                        .fill(safetyRed.opacity(0.32))
+                        .frame(width: max(7, width * dangerBand))
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+
+                Capsule()
+                    .fill(statusColor)
+                    .frame(width: max(3, width * summary.thermalLoad))
+            }
+            .frame(width: width, height: 5)
+        }
+        .frame(height: 5)
+        .accessibilityHidden(true)
+    }
+
+    /// Width of the "close to the limit" band, matching the 10° that turns a
+    /// reading into a warning.
+    private var dangerBand: CGFloat? {
+        guard let limit = summary.safetyLimit, limit > 0 else { return nil }
+        return CGFloat(min(10 / limit, 0.4))
+    }
+
     private var statusColor: Color {
         switch summary.state {
         case .normal, .warning: thermalOrange
         case .danger: safetyRed
-        case .unavailable: .secondary
+        case .unavailable: Color.secondary
         }
     }
 
-    private var headroomColor: Color {
+    /// The reading itself escalates with the gauge, so a family inside the
+    /// warning band stands out without a separate badge.
+    private var valueColor: Color {
         switch summary.state {
-        case .normal: .secondary
+        case .normal, .unavailable: Color.primary
         case .warning: thermalOrange
         case .danger: safetyRed
-        case .unavailable: .orange
         }
     }
 }
@@ -314,17 +356,13 @@ private struct SensorDetailsPopover: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Sensor details")
+                Text("Sensors")
                     .font(.headline)
                 Spacer()
-                Text("\(rows.count) total")
+                Text("\(rows.count)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-
-            Text("Hardware IDs are kept here for diagnostics.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
 
             Divider()
 
@@ -345,9 +383,6 @@ private struct SensorDetailsPopover: View {
 
                         ForEach(group.rows) { row in
                             HStack(spacing: 8) {
-                                Text("Sensor ID")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
                                 Text(row.key)
                                     .font(.caption.monospaced().weight(.medium))
 
@@ -380,7 +415,7 @@ private struct SensorDetailsPopover: View {
         .padding(12)
         .frame(
             width: 300,
-            height: min(max(CGFloat(rows.count) * 39 + 76, 160), 340)
+            height: min(max(CGFloat(rows.count) * 39 + 48, 160), 340)
         )
     }
 
@@ -396,6 +431,7 @@ private struct SensorDetailsPopover: View {
 private struct TemperatureSummary: Identifiable {
     let family: SensorFamily
     let hottest: Double?
+    let safetyLimit: Double?
     let minimumHeadroom: Double?
     let thermalLoad: CGFloat
     let sensorCount: Int

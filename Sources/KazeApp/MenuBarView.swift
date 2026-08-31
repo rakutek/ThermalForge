@@ -3,44 +3,56 @@ import KazeDomain
 
 struct MenuBarView: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var presentationState: DashboardPresentationState
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text("Kaze")
-                        .font(.system(.title3, design: .rounded).weight(.semibold))
-                    Spacer()
-                    Text(appState.modeDisplayName)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(stateColor)
-                }
+        VStack(spacing: 0) {
+            header
 
-                if let fault = appState.status?.fault {
-                    Label(fault.message, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if let error = appState.errorMessage {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if let error = appState.controlErrorMessage {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if let message = appState.helperRecoveryMessage {
-                    Label(message, systemImage: appState.isRecoveringHelper
-                        ? "arrow.triangle.2.circlepath"
-                        : "exclamationmark.circle")
-                        .font(.caption)
-                        .foregroundStyle(appState.isRecoveringHelper ? .orange : .red)
-                        .fixedSize(horizontal: false, vertical: true)
+            if let alert = dashboardAlerts.first {
+                alertView(
+                    alert,
+                    additionalAlerts: Array(dashboardAlerts.dropFirst())
+                )
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+            }
+
+            CoolingModeControlView(
+                status: appState.status,
+                pendingIntent: appState.pendingIntent,
+                isDisabled: appState.restrictsManagedModeSelection,
+                hasExternalControl: appState.hasExternalControlLease,
+                onSelectProfile: appState.selectProfile,
+                onMaximum: appState.maximum,
+                onAutomatic: appState.automatic
+            )
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                if let status = appState.status, let sample = status.latestSample {
+                    CurrentReadingsView(sample: sample, inventory: status.inventory)
+                        .layoutPriority(1)
+                } else {
+                    HStack(spacing: 8) {
+                        if appState.isRecoveringHelper {
+                            ProgressView().controlSize(.small)
+                        }
+                        Text(appState.isRecoveringHelper
+                            ? "Restoring the cooling controller…"
+                            : "Waiting for the cooling controller…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(
+                        Color(nsColor: .controlBackgroundColor),
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    )
                 }
 
                 TelemetryChartView(
@@ -50,101 +62,284 @@ struct MenuBarView: View {
                     errorMessage: appState.telemetryErrorMessage,
                     onSelectWindow: appState.setTelemetryWindow
                 )
-
-                Divider()
-
-                if let sample = appState.status?.latestSample {
-                    Text("CURRENT READINGS")
-                        .font(.caption2.weight(.semibold))
-                        .tracking(0.6)
-                        .foregroundStyle(.secondary)
-
-                    ForEach(sample.fans, id: \.index) { fan in
-                        HStack {
-                            Label("Fan \(fan.index)", systemImage: "fan")
-                            Spacer()
-                            Text("\(fan.actualRPM) / \(fan.targetRPM) RPM")
-                                .font(.body.monospaced())
-                            Text(fan.mode.rawValue)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    ForEach(sample.temperatures.keys.sorted(), id: \.self) { key in
-                        if let value = sample.temperatures[key] {
-                            HStack {
-                                Text(key).font(.body.monospaced())
-                                Spacer()
-                                Text("\(value, specifier: "%.1f")°C")
-                                    .font(.body.monospaced())
-                                    .foregroundStyle(value >= 90 ? .red : .primary)
-                            }
-                        }
-                    }
-                } else {
-                    Text(appState.isRecoveringHelper
-                        ? "Restoring the signed helper connection…"
-                        : "Waiting for the signed helper…")
-                        .foregroundStyle(.secondary)
-                }
-
-                Divider()
-
-                Text("MODE")
-                    .font(.caption2.weight(.semibold))
-                    .tracking(0.6)
-                    .foregroundStyle(.secondary)
-                HStack {
-                    ForEach(ProfileID.allCases, id: \.self) { profile in
-                        Button(profile.rawValue.capitalized) { appState.selectProfile(profile) }
-                    }
-                }
-                .disabled(appState.isRecoveringHelper)
-                HStack {
-                    Button("Maximum") { appState.maximum() }.tint(.orange)
-                    Button("Apple Automatic") { appState.automatic() }
-                }
-                .disabled(appState.isRecoveringHelper)
-
-                Divider()
-
-                HStack {
-                    Text("Privileged helper")
-                    Spacer()
-                    Text(appState.helperRegistration).foregroundStyle(.secondary)
-                }
-                HStack {
-                    Button("Register / Update") { appState.registerHelper() }
-                    Button("Unregister") { appState.unregisterHelper() }
-                    Button("Open Settings") { appState.openLoginItemSettings() }
-                }
-                .disabled(appState.isManagingHelper)
-
-                Toggle(
-                    "Launch at Login",
-                    isOn: Binding(
-                        get: { appState.launchAtLogin },
-                        set: { appState.setLaunchAtLogin($0) }
-                    )
-                )
-
-                Button("Quit") { NSApplication.shared.terminate(nil) }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
+                .frame(maxHeight: .infinity)
             }
-            .padding(14)
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 10)
+            .frame(maxHeight: .infinity, alignment: .top)
         }
         .frame(width: 430, height: 680)
     }
 
+    private var header: some View {
+        HStack(spacing: 9) {
+            Text("Kaze")
+                .font(.system(.title3, design: .rounded).weight(.semibold))
+
+            Spacer()
+
+            ControllerStatusPill(
+                title: appState.modeDisplayName,
+                color: stateColor,
+                isWorking: appState.pendingIntent != nil || appState.isRecoveringHelper
+            )
+
+            Button {
+                presentationState.toggle(.settings)
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: 28, height: 28)
+                    .background(Color.primary.opacity(0.06), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Kaze settings")
+            .accessibilityLabel("Open Kaze settings")
+            .popover(
+                isPresented: presentationState.binding(for: .settings),
+                arrowEdge: .leading
+            ) {
+                AppSettingsPopoverView(
+                    helperRegistration: appState.helperRegistration,
+                    isManagingHelper: appState.isManagingHelper,
+                    launchAtLogin: Binding(
+                        get: { appState.launchAtLogin },
+                        set: { appState.setLaunchAtLogin($0) }
+                    ),
+                    onRegisterHelper: appState.registerHelper,
+                    onUnregisterHelper: appState.unregisterHelper,
+                    onOpenLoginItemSettings: appState.openLoginItemSettings,
+                    onQuit: { NSApplication.shared.terminate(nil) }
+                )
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+    }
+
+    private func alertView(
+        _ alert: DashboardAlert,
+        additionalAlerts: [DashboardAlert] = []
+    ) -> some View {
+        StatusBannerView(
+            message: alert.message,
+            systemImage: alert.systemImage,
+            color: alert.color,
+            actionTitle: alert.actionTitle,
+            action: alert.action,
+            additionalCount: additionalAlerts.count,
+            onShowAdditional: additionalAlerts.isEmpty
+                ? nil
+                : { presentationState.present(.alertDetails) }
+        )
+        .help(alert.help ?? alert.message)
+        .popover(
+            isPresented: presentationState.binding(for: .alertDetails),
+            arrowEdge: .leading
+        ) {
+            AlertDetailsPopover(alerts: additionalAlerts)
+        }
+    }
+
+    private var dashboardAlerts: [DashboardAlert] {
+        var alerts: [DashboardAlert] = []
+
+        if let modeAlert = controllerModeAlert {
+            alerts.append(modeAlert)
+        } else if let fault = appState.status?.fault {
+            alerts.append(
+                DashboardAlert(
+                    id: "fault",
+                    message: fault.message,
+                    systemImage: "exclamationmark.triangle.fill",
+                    color: .red
+                )
+            )
+        }
+
+        if let message = appState.helperRecoveryMessage {
+            let helperAction = helperAlertAction
+            alerts.append(
+                DashboardAlert(
+                    id: "helper",
+                    message: message,
+                    systemImage: appState.isRecoveringHelper
+                        ? "arrow.triangle.2.circlepath"
+                        : "exclamationmark.circle",
+                    color: appState.isRecoveringHelper ? .orange : .red,
+                    actionTitle: helperAction?.title,
+                    action: helperAction?.action
+                )
+            )
+        }
+
+        if let error = appState.errorMessage {
+            alerts.append(
+                DashboardAlert(
+                    id: "app-error",
+                    message: error,
+                    systemImage: "xmark.circle.fill",
+                    color: .red
+                )
+            )
+        }
+
+        if let error = appState.controlErrorMessage {
+            alerts.append(
+                DashboardAlert(
+                    id: "control-error",
+                    message: error,
+                    systemImage: "exclamationmark.circle",
+                    color: .orange,
+                    actionTitle: "Restore Auto",
+                    action: appState.automatic
+                )
+            )
+        }
+
+        return alerts
+    }
+
+    private var controllerModeAlert: DashboardAlert? {
+        guard let status = appState.status else { return nil }
+        let faultHelp = status.fault?.message
+
+        switch status.mode {
+        case .safetyMaximum:
+            return DashboardAlert(
+                id: "safety-maximum",
+                message: "Safety limit reached — fans are running at maximum.",
+                systemImage: "exclamationmark.triangle.fill",
+                color: .red,
+                help: faultHelp
+            )
+        case .safetyCooling:
+            return DashboardAlert(
+                id: "safety-cooling",
+                message: "Temperatures are recovering — safety cooling remains active.",
+                systemImage: "thermometer.high",
+                color: .red,
+                help: faultHelp
+            )
+        case .failSafeAutomatic:
+            return DashboardAlert(
+                id: "fail-safe-automatic",
+                message: "Hardware control failed — Apple Automatic cooling is active.",
+                systemImage: "exclamationmark.shield.fill",
+                color: .red,
+                help: faultHelp
+            )
+        case .failSafeMaximum:
+            return DashboardAlert(
+                id: "fail-safe-maximum",
+                message: "Hardware control failed — maximum cooling is active.",
+                systemImage: "exclamationmark.shield.fill",
+                color: .red,
+                help: faultHelp
+            )
+        case .unrecoveredFault:
+            return DashboardAlert(
+                id: "unrecovered-fault",
+                message: "Cooling control could not recover. Restore Apple Automatic.",
+                systemImage: "xmark.shield.fill",
+                color: .red,
+                actionTitle: "Restore Auto",
+                action: appState.automatic,
+                help: faultHelp
+            )
+        case .fixed:
+            return DashboardAlert(
+                id: "fixed-control",
+                message: "Another Kaze client controls a fixed fan speed.",
+                systemImage: "person.2.fill",
+                color: .orange,
+                actionTitle: "Restore Auto",
+                action: appState.automatic
+            )
+        default:
+            if appState.hasExternalControlLease {
+                return DashboardAlert(
+                    id: "external-control",
+                    message: "Another Kaze client currently owns cooling control.",
+                    systemImage: "person.2.fill",
+                    color: .orange,
+                    actionTitle: "Restore Auto",
+                    action: appState.automatic
+                )
+            }
+            return nil
+        }
+    }
+
+    private var helperAlertAction: (title: String, action: () -> Void)? {
+        switch appState.helperRegistration {
+        case "Needs approval":
+            return ("Open Settings", appState.openLoginItemSettings)
+        case "Not registered":
+            return ("Install Helper", appState.registerHelper)
+        default:
+            if appState.helperRecoveryMessage?.localizedCaseInsensitiveContains("failed") == true {
+                return ("Retry", appState.registerHelper)
+            }
+            return nil
+        }
+    }
+
     private var stateColor: Color {
+        switch appState.status?.mode {
+        case .safetyMaximum, .safetyCooling, .failSafeAutomatic,
+             .failSafeMaximum, .unrecoveredFault:
+            return .red
+        default:
+            break
+        }
         if appState.pendingIntent != nil || appState.isRecoveringHelper { return .orange }
         return switch appState.status?.mode {
-        case .safetyMaximum, .safetyCooling, .failSafeMaximum, .unrecoveredFault: .red
         case .maximum, .fixed, .balanced, .performance, .smart: .orange
-        case .automatic, .failSafeAutomatic: .green
+        case .automatic: .green
         default: .secondary
         }
+    }
+}
+
+private struct DashboardAlert: Identifiable {
+    let id: String
+    let message: String
+    let systemImage: String
+    let color: Color
+    var actionTitle: String?
+    var action: (() -> Void)?
+    var help: String?
+}
+
+private struct AlertDetailsPopover: View {
+    let alerts: [DashboardAlert]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Additional alerts")
+                .font(.headline)
+
+            ForEach(alerts) { alert in
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(alert.message, systemImage: alert.systemImage)
+                        .font(.caption)
+                        .foregroundStyle(alert.color)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if let actionTitle = alert.actionTitle, let action = alert.action {
+                        Button(actionTitle, action: action)
+                            .controlSize(.small)
+                    }
+                }
+
+                if alert.id != alerts.last?.id {
+                    Divider()
+                }
+            }
+        }
+        .padding(12)
+        .frame(width: 320)
     }
 }

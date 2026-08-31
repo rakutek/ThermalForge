@@ -9,21 +9,22 @@ struct TelemetryChartView: View {
     let errorMessage: String?
     let onSelectWindow: (TelemetryWindow) -> Void
 
+    @EnvironmentObject private var presentationState: DashboardPresentationState
+
     // MenuBarExtra may reconstruct its content as status polling publishes new
     // values. Keep the selected metric outside that transient view lifetime so
     // choosing Fan cannot immediately fall back to Temperature.
     @AppStorage("KazeTelemetryChartMetric") private var metric: ChartMetric = .temperature
-    @State private var sensorFamily: SensorFamily = .cpu
-    @State private var fanOffset = 0
+    @AppStorage("KazeTelemetrySensorFamily") private var sensorFamily: SensorFamily = .cpu
+    @AppStorage("KazeTelemetryFanOffset") private var fanOffset = 0
     @State private var selectedDate: Date?
-    @State private var showsSeriesPicker = false
 
     private let thermalOrange = Color(red: 0.976, green: 0.451, blue: 0.086)
     private let coolingBlue = Color(red: 0.220, green: 0.741, blue: 0.973)
     private let safetyRed = Color(red: 0.937, green: 0.267, blue: 0.267)
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 7) {
             header
             controls
             readout
@@ -37,18 +38,20 @@ struct TelemetryChartView: View {
                     fanChart
                 }
             }
-            .frame(height: 164)
-
-            windowPicker
+            .frame(minHeight: 72, maxHeight: .infinity)
 
             if let errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.circle")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(errorMessage)
+                    .accessibilityLabel(errorMessage)
             }
         }
-        .padding(12)
+        .padding(9)
+        .frame(maxHeight: .infinity, alignment: .top)
         .background {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
@@ -59,7 +62,7 @@ struct TelemetryChartView: View {
         }
         .onChange(of: metric) { _, _ in
             selectedDate = nil
-            showsSeriesPicker = false
+            presentationState.dismiss(.telemetrySeries)
         }
         .onChange(of: sensorFamily) { _, _ in selectedDate = nil }
         .onChange(of: fanOffset) { _, _ in selectedDate = nil }
@@ -70,11 +73,15 @@ struct TelemetryChartView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Text("THERMAL TRACE")
+            Text("HISTORY")
                 .font(.caption.weight(.semibold))
                 .tracking(0.8)
                 .foregroundStyle(.secondary)
-            Spacer()
+            Spacer(minLength: 4)
+            rangePicker
+            Rectangle()
+                .fill(Color.primary.opacity(0.10))
+                .frame(width: 1, height: 12)
             Circle()
                 .fill(samples.isEmpty ? Color.secondary : Color.green)
                 .frame(width: 6, height: 6)
@@ -86,25 +93,53 @@ struct TelemetryChartView: View {
 
     private var controls: some View {
         HStack(spacing: 8) {
-            Picker("Chart metric", selection: $metric) {
+            HStack(spacing: 2) {
                 ForEach(ChartMetric.allCases) { item in
-                    Label(item.label, systemImage: item.icon)
-                        .tag(item)
+                    Button {
+                        metric = item
+                    } label: {
+                        Label(item.label, systemImage: item.icon)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(metric == item ? Color.primary : Color.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 26)
+                            .contentShape(Rectangle())
+                            .background {
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .fill(metric == item ? Color.primary.opacity(0.09) : Color.clear)
+                            }
+                            .overlay(alignment: .bottom) {
+                                Capsule()
+                                    .fill(item == .temperature ? thermalOrange : coolingBlue)
+                                    .frame(width: 20, height: 2)
+                                    .padding(.bottom, 2)
+                                    .opacity(metric == item ? 1 : 0)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
+                    .accessibilityValue(metric == item ? "Selected" : "Not selected")
+                    .accessibilityAddTraits(metric == item ? .isSelected : [])
                 }
             }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .controlSize(.small)
+            .frame(maxWidth: .infinity)
+            .padding(2)
+            .background(
+                Color.primary.opacity(0.045),
+                in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+            )
             .accessibilityLabel("Chart metric")
 
             Button {
-                showsSeriesPicker = true
+                presentationState.present(.telemetrySeries)
             } label: {
                 selectorLabel(metric == .temperature ? sensorFamily.displayName : selectedFanLabel)
             }
             .buttonStyle(.plain)
             .frame(width: metric == .temperature ? 106 : 92)
-            .popover(isPresented: $showsSeriesPicker, arrowEdge: .top) {
+            .popover(
+                isPresented: presentationState.binding(for: .telemetrySeries),
+                arrowEdge: .leading
+            ) {
                 seriesPicker
             }
         }
@@ -119,17 +154,17 @@ struct TelemetryChartView: View {
                         selected: sensorFamily == family
                     ) {
                         sensorFamily = family
-                        showsSeriesPicker = false
+                        presentationState.dismiss(.telemetrySeries)
                     }
                 }
             } else {
                 ForEach(Array(availableFans.enumerated()), id: \.offset) { offset, fan in
                     seriesChoice(
-                        "Fan \(fan.index)",
+                        "Fan \(fan.index + 1)",
                         selected: fanOffset == offset
                     ) {
                         fanOffset = offset
-                        showsSeriesPicker = false
+                        presentationState.dismiss(.telemetrySeries)
                     }
                 }
             }
@@ -180,7 +215,7 @@ struct TelemetryChartView: View {
         return HStack(alignment: .firstTextBaseline, spacing: 10) {
             if metric == .temperature {
                 Text(temperatureValue(in: point).map { String(format: "%.1f°C", $0) } ?? "—°C")
-                    .font(.system(size: 24, weight: .semibold, design: .rounded).monospacedDigit())
+                    .font(.system(size: 22, weight: .semibold, design: .rounded).monospacedDigit())
                     .foregroundStyle(thermalOrange)
                 if let values = temperatureValues, !values.isEmpty {
                     Text("min \(values.min() ?? 0, specifier: "%.0f")°  max \(values.max() ?? 0, specifier: "%.0f")°")
@@ -189,7 +224,7 @@ struct TelemetryChartView: View {
                 }
             } else {
                 Text(fanActualValue(in: point).map { "\($0) RPM" } ?? "— RPM")
-                    .font(.system(size: 24, weight: .semibold, design: .rounded).monospacedDigit())
+                    .font(.system(size: 22, weight: .semibold, design: .rounded).monospacedDigit())
                     .foregroundStyle(coolingBlue)
                 if let target = fanTargetValue(in: point) {
                     Text("target \(target)")
@@ -207,7 +242,7 @@ struct TelemetryChartView: View {
                 .foregroundStyle(point.sample.faultCode == nil ? Color.secondary : safetyRed)
             }
         }
-        .frame(height: 34)
+        .frame(height: 30)
     }
 
     private var temperatureChart: some View {
@@ -216,9 +251,9 @@ struct TelemetryChartView: View {
                 RuleMark(y: .value("Safety limit", limit))
                     .foregroundStyle(safetyRed.opacity(0.75))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                    .annotation(position: .top, alignment: .trailing, spacing: 2) {
+                    .annotation(position: .bottom, alignment: .trailing, spacing: 2) {
                         Text("LIMIT \(Int(limit))°")
-                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
                             .foregroundStyle(safetyRed)
                     }
             }
@@ -334,25 +369,22 @@ struct TelemetryChartView: View {
         .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 6))
     }
 
-    private var windowPicker: some View {
-        HStack(spacing: 4) {
-            Text("RANGE")
-                .font(.caption2.weight(.semibold))
-                .tracking(0.6)
-                .foregroundStyle(.secondary)
-            Spacer()
+    private var rangePicker: some View {
+        HStack(spacing: 1) {
             ForEach(TelemetryWindow.allCases) { option in
                 Button(option.shortLabel) { onSelectWindow(option) }
                     .buttonStyle(.plain)
-                    .font(.caption.monospaced().weight(option == window ? .semibold : .regular))
+                    .font(.caption2.monospaced().weight(option == window ? .semibold : .regular))
                     .foregroundStyle(option == window ? Color.primary : Color.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
                     .background {
                         Capsule()
                             .fill(option == window ? Color.primary.opacity(0.09) : Color.clear)
                     }
                     .accessibilityLabel("Show the last \(option.accessibilityLabel)")
+                    .accessibilityValue(option == window ? "Selected" : "Not selected")
+                    .accessibilityAddTraits(option == window ? .isSelected : [])
             }
         }
     }
@@ -363,7 +395,7 @@ struct TelemetryChartView: View {
             AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
                 .foregroundStyle(Color.primary.opacity(0.08))
             AxisValueLabel(format: .dateTime.hour().minute())
-                .font(.system(size: 9, design: .monospaced))
+                .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(Color.secondary)
         }
     }
@@ -378,7 +410,7 @@ struct TelemetryChartView: View {
                     Text("\(Int(degrees))°")
                 }
             }
-            .font(.system(size: 9, design: .monospaced))
+            .font(.system(size: 10, design: .monospaced))
             .foregroundStyle(Color.secondary)
         }
     }
@@ -393,7 +425,7 @@ struct TelemetryChartView: View {
                     Text(rpm >= 1_000 ? "\(rpm / 1_000)k" : "\(rpm)")
                 }
             }
-            .font(.system(size: 9, design: .monospaced))
+            .font(.system(size: 10, design: .monospaced))
             .foregroundStyle(Color.secondary)
         }
     }
@@ -449,7 +481,7 @@ struct TelemetryChartView: View {
 
     private var selectedFanLabel: String {
         guard availableFans.indices.contains(fanOffset) else { return "Fan" }
-        return "Fan \(availableFans[fanOffset].index)"
+        return "Fan \(availableFans[fanOffset].index + 1)"
     }
 
     private var temperatureValues: [Double]? {

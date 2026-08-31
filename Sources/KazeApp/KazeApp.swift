@@ -4,10 +4,13 @@ import KazeDomain
 @main
 struct KazeApp: App {
     @StateObject private var appState = AppState()
+    @StateObject private var presentationState = DashboardPresentationState()
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarView().environmentObject(appState)
+            MenuBarView()
+                .environmentObject(appState)
+                .environmentObject(presentationState)
         } label: {
             HStack(spacing: 3) {
                 Image(systemName: iconName)
@@ -31,7 +34,8 @@ struct KazeApp: App {
 
     private var iconName: String {
         switch appState.status?.mode {
-        case .safetyMaximum, .safetyCooling, .failSafeMaximum, .unrecoveredFault:
+        case .safetyMaximum, .safetyCooling, .failSafeAutomatic,
+             .failSafeMaximum, .unrecoveredFault:
             "exclamationmark.triangle.fill"
         case .balanced, .performance, .smart, .fixed, .maximum:
             "fan.fill"

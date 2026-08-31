@@ -42,17 +42,28 @@ final class AppState: ObservableObject {
     private let automaticRepairFailureThreshold = 3
 
     var modeDisplayName: String {
-        if let status {
-            switch status.mode {
-            case .safetyMaximum, .safetyCooling, .failSafeAutomatic, .failSafeMaximum, .unrecoveredFault:
-                return status.mode.displayName
-            default:
-                break
-            }
-        }
-        if let pendingIntent { return "\(pendingIntent.displayName)…" }
+        if let status { return status.mode.displayName }
         if isRecoveringHelper { return "Recovering…" }
+        if pendingIntent != nil { return "Applying…" }
         return status?.mode.displayName ?? "Offline"
+    }
+
+    var hasExternalControlLease: Bool {
+        guard !isPreviewMode, status?.leaseID != nil else { return false }
+        return renewalTask == nil
+    }
+
+    var restrictsManagedModeSelection: Bool {
+        guard let status else { return true }
+        if isRecoveringHelper || isManagingHelper || pendingIntent != nil { return true }
+        if status.fault != nil || hasExternalControlLease { return true }
+        switch status.mode {
+        case .starting, .safetyMaximum, .safetyCooling, .failSafeAutomatic,
+             .failSafeMaximum, .unrecoveredFault, .fixed:
+            return true
+        default:
+            return false
+        }
     }
 
     init() {
@@ -97,12 +108,19 @@ final class AppState: ObservableObject {
         helperRegistration = "Removing…"
         Task {
             let service = SMAppService.daemon(plistName: IPCConstants.launchDaemonPlistName)
-            var restoreError: Error?
             if service.status == .enabled {
                 do {
                     status = try await client.perform(.resetAutomatic)
                 } catch {
-                    restoreError = error
+                    automaticRegistrationSuppressed = false
+                    UserDefaults.standard.set(
+                        false,
+                        forKey: "KazeAutomaticHelperRegistrationSuppressed"
+                    )
+                    errorMessage = "Helper was not removed because Apple Automatic cooling could not be confirmed: \(error)"
+                    isManagingHelper = false
+                    refreshRegistrationStatus()
+                    return
                 }
             }
 
@@ -114,9 +132,7 @@ final class AppState: ObservableObject {
                 status = nil
                 telemetrySamples = []
                 helperRecoveryMessage = nil
-                errorMessage = restoreError.map {
-                    "The helper was removed, but automatic restore could not be confirmed: \($0)"
-                }
+                errorMessage = nil
             } catch {
                 errorMessage = "Helper removal failed: \(error.localizedDescription)"
             }
@@ -576,7 +592,7 @@ final class AppState: ObservableObject {
         let service = SMAppService.daemon(plistName: IPCConstants.launchDaemonPlistName)
         helperRegistration = switch service.status {
         case .notRegistered: "Not registered"
-        case .enabled: "Enabled"
+        case .enabled: "Installed"
         case .requiresApproval: "Needs approval"
         case .notFound: "Not registered"
         @unknown default: "Unknown"

@@ -194,7 +194,8 @@ struct MenuBarView: View {
                     systemImage: "exclamationmark.circle",
                     color: .orange,
                     actionTitle: "Restore Auto",
-                    action: appState.automatic
+                    action: appState.automatic,
+                    help: appState.controlErrorDetail
                 )
             )
         }

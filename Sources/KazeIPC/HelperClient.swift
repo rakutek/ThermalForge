@@ -28,6 +28,22 @@ public enum HelperClientError: Error, Sendable, CustomStringConvertible {
             false
         }
     }
+
+    /// Whether the failure means the connection itself is unusable.
+    ///
+    /// A timeout does not: the request may still be in flight, and the helper
+    /// ties a control lease to the connection it came in on. Tearing the
+    /// connection down after a slow reply closed the lease the retry was about
+    /// to renew, so a two-second hiccup dropped the user back to Apple
+    /// Automatic and answered the retry with `lease-not-owned`.
+    var discardsConnection: Bool {
+        switch self {
+        case .unavailable, .invalidProxy:
+            true
+        case .remote, .missingResult, .missingTelemetry, .timedOut:
+            false
+        }
+    }
 }
 
 public final class HelperClient: @unchecked Sendable {
@@ -113,7 +129,7 @@ public final class HelperClient: @unchecked Sendable {
                 }
             }
         } catch {
-            if (error as? HelperClientError)?.isConnectionFailure == true {
+            if (error as? HelperClientError)?.discardsConnection == true {
                 discardAndInvalidateIfCurrent(connection)
             }
             throw error

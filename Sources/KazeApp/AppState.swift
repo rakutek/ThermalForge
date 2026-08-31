@@ -10,6 +10,10 @@ final class AppState: ObservableObject {
     @Published private(set) var status: ControllerStatus?
     @Published private(set) var errorMessage: String?
     @Published private(set) var controlErrorMessage: String?
+    /// The raw reason behind `controlErrorMessage`, surfaced as a tooltip. The
+    /// banner itself says what happened in the user's terms; the IPC wording
+    /// belongs where someone goes looking for it.
+    @Published private(set) var controlErrorDetail: String?
     @Published private(set) var helperRecoveryMessage: String?
     @Published private(set) var helperRegistration = "Checking…"
     @Published private(set) var isRecoveringHelper = false
@@ -27,6 +31,11 @@ final class AppState: ObservableObject {
     private var renewalTask: Task<Void, Never>?
     private var registrationTask: Task<Void, Never>?
     private var controlGeneration: UInt64 = 0
+    /// The lease this app most recently held. A status already in flight can
+    /// still report it for a moment after control is handed back — the helper
+    /// clears the lease only once the reset lands — and that is our own lease
+    /// finishing rather than another client taking over.
+    private var ownLeaseID: UUID?
     private var controlActivity: ControlActivity?
     private var consecutiveConnectionFailures = 0
     private var registrationRecoveryAttempt = 0
@@ -49,8 +58,12 @@ final class AppState: ObservableObject {
     }
 
     var hasExternalControlLease: Bool {
-        guard !isPreviewMode, status?.leaseID != nil else { return false }
-        return renewalTask == nil
+        guard !isPreviewMode, let leaseID = status?.leaseID else { return false }
+        // A control change in flight already owns the UI — the mode row reads
+        // "Applying…" — and the status it is about to replace still carries the
+        // lease we are releasing.
+        guard renewalTask == nil, pendingIntent == nil else { return false }
+        return leaseID != ownLeaseID
     }
 
     var restrictsManagedModeSelection: Bool {
@@ -104,6 +117,7 @@ final class AppState: ObservableObject {
         stopRenewing()
         controlGeneration &+= 1
         controlErrorMessage = nil
+        controlErrorDetail = nil
         isManagingHelper = true
         helperRegistration = "Removing…"
         Task {
@@ -170,6 +184,7 @@ final class AppState: ObservableObject {
         controlGeneration &+= 1
         let generation = controlGeneration
         controlErrorMessage = nil
+        controlErrorDetail = nil
         pendingIntent = .automatic
         Task {
             do {
@@ -223,6 +238,7 @@ final class AppState: ObservableObject {
         controlGeneration &+= 1
         let generation = controlGeneration
         controlErrorMessage = nil
+        controlErrorDetail = nil
         pendingIntent = intent
         Task {
             defer {
@@ -238,6 +254,7 @@ final class AppState: ObservableObject {
                 guard let leaseID = newStatus.leaseID,
                       let expiresAt = newStatus.leaseExpiresAtUptimeNanoseconds else {
                     controlErrorMessage = "The helper did not return a control lease."
+                    controlErrorDetail = nil
                     return
                 }
                 startRenewing(leaseID, expiresAt: expiresAt, generation: generation)
@@ -254,6 +271,7 @@ final class AppState: ObservableObject {
 
     private func startRenewing(_ leaseID: UUID, expiresAt: UInt64, generation: UInt64) {
         stopRenewing()
+        ownLeaseID = leaseID
         beginControlActivity()
         renewalTask = Task { [weak self] in
             var deadline = expiresAt
@@ -291,6 +309,7 @@ final class AppState: ObservableObject {
                     }
                     self.status = renewed
                     self.controlErrorMessage = nil
+                    self.controlErrorDetail = nil
                     deadline = renewedDeadline
                     failureCount = 0
                     nextDelay = self.renewalIntervalSeconds
@@ -309,7 +328,8 @@ final class AppState: ObservableObject {
                         return
                     }
 
-                    self.controlErrorMessage = "Control connection is unstable; retrying lease renewal (\(failureCount))."
+                    self.controlErrorMessage = "Reconnecting to the cooling controller…"
+                    self.controlErrorDetail = "Lease renewal retry \(failureCount): \(errorDescription)"
                     let remainingSeconds = Double(remaining) / 1_000_000_000
                     nextDelay = min(
                         self.renewalRetryIntervalSeconds,
@@ -582,7 +602,8 @@ final class AppState: ObservableObject {
     private func recordLostLease(reason: String, generation: UInt64) {
         guard generation == controlGeneration else { return }
         logger.error("lease_control_lost reason=\(reason, privacy: .public)")
-        controlErrorMessage = "Control lease ended: \(reason)"
+        controlErrorMessage = "Cooling control ended · Apple Automatic is active"
+        controlErrorDetail = "The control lease ended: \(reason)"
         renewalTask = nil
         endControlActivity()
     }

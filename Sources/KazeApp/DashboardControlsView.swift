@@ -35,7 +35,6 @@ enum DashboardPopover: Equatable {
     case settings
     case sensorDetails
     case telemetrySensor
-    case telemetryFan
     case alertDetails
 }
 

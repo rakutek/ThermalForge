@@ -34,7 +34,8 @@ final class DashboardPresentationState: ObservableObject {
 enum DashboardPopover: Equatable {
     case settings
     case sensorDetails
-    case telemetrySeries
+    case telemetrySensor
+    case telemetryFan
     case alertDetails
 }
 

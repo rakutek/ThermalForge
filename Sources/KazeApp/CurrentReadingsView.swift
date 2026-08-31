@@ -7,10 +7,7 @@ struct CurrentReadingsView: View {
 
     @EnvironmentObject private var presentationState: DashboardPresentationState
 
-    private let temperatureColumns = Array(
-        repeating: GridItem(.flexible(), spacing: 6),
-        count: 4
-    )
+    private let temperatureColumns = [GridItem(.flexible())]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -29,7 +26,7 @@ struct CurrentReadingsView: View {
             Divider()
                 .padding(.vertical, 1)
 
-            LazyVGrid(columns: temperatureColumns, spacing: 6) {
+            LazyVGrid(columns: temperatureColumns, spacing: 4) {
                 ForEach(temperatureSummaries) { summary in
                     TemperatureReadingCell(summary: summary)
                 }
@@ -162,6 +159,7 @@ private struct FanReadingCell: View {
     let isCompact: Bool
 
     private let coolingBlue = Color(red: 0.220, green: 0.741, blue: 0.973)
+    private let targetBlue = Color(red: 0.098, green: 0.494, blue: 0.780)
     private let thermalOrange = Color(red: 0.976, green: 0.451, blue: 0.086)
 
     var body: some View {
@@ -198,7 +196,18 @@ private struct FanReadingCell: View {
                 Spacer(minLength: 0)
             }
 
-            speedGauge
+            HStack(spacing: 5) {
+                speedGauge
+
+                // At four columns there is no room for the word, and the
+                // marker has to speak for itself.
+                if !isCompact {
+                    Text("Target \(fan.targetRPM)")
+                        .font(.system(size: 9, weight: .medium).monospacedDigit())
+                        .foregroundStyle(targetBlue)
+                        .fixedSize()
+                }
+            }
         }
         .padding(.horizontal, isCompact ? 6 : 8)
         .padding(.vertical, 5)
@@ -226,7 +235,7 @@ private struct FanReadingCell: View {
                     .frame(width: max(3, width * fraction(of: fan.actualRPM)), height: 4)
 
                 RoundedRectangle(cornerRadius: 1, style: .continuous)
-                    .fill(thermalOrange)
+                    .fill(targetBlue)
                     .frame(width: 2, height: 9)
                     .offset(x: min(max(width * fraction(of: fan.targetRPM) - 1, 0), width - 2))
             }
@@ -253,43 +262,41 @@ private struct TemperatureReadingCell: View {
     private let safetyRed = Color(red: 0.937, green: 0.267, blue: 0.267)
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 4) {
-                Image(systemName: summary.family.readingsIcon)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(statusColor)
-                Text(summary.family.readingsName)
-                    .font(.system(size: 10, weight: .medium))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                if summary.unavailableCount > 0 {
-                    Image(systemName: "exclamationmark.circle.fill")
-                        .font(.system(size: 10))
-                        .foregroundStyle(thermalOrange)
-                        .help("\(summary.unavailableCount) unavailable")
-                }
-            }
+        HStack(spacing: 6) {
+            Image(systemName: summary.family.readingsIcon)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(statusColor)
+                .frame(width: 13)
+
+            Text(summary.family.readingsName)
+                .font(.system(size: 11, weight: .medium))
+                .lineLimit(1)
+                .frame(width: 52, alignment: .leading)
 
             Text(summary.hottest.map { String(format: "%.1f°", $0) } ?? "—°")
-                .font(.system(size: 17, weight: .semibold, design: .rounded).monospacedDigit())
+                .font(.system(size: 15, weight: .semibold, design: .rounded).monospacedDigit())
                 .foregroundStyle(valueColor)
+                .frame(width: 52, alignment: .trailing)
 
-            HStack(spacing: 5) {
-                headroomGauge
+            if summary.unavailableCount > 0 {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(thermalOrange)
+                    .help("\(summary.unavailableCount) unavailable")
+            }
 
-                if let limit = summary.safetyLimit {
-                    Text("\(Int(limit))°")
-                        .font(
-                            .system(size: 9, weight: .medium, design: .rounded)
-                                .monospacedDigit()
-                        )
-                        .foregroundStyle(summary.state == .normal ? Color.secondary : statusColor)
-                }
+            headroomGauge
+
+            if let limit = summary.safetyLimit {
+                Text("Limit \(Int(limit))°")
+                    .font(.system(size: 9, weight: .medium).monospacedDigit())
+                    .foregroundStyle(summary.state == .normal ? Color.secondary : statusColor)
+                    .fixedSize()
             }
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 5)
-        .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
         .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .help(summary.helpText)
         .accessibilityElement(children: .combine)

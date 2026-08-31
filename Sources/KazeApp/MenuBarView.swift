@@ -69,7 +69,7 @@ struct MenuBarView: View {
             .padding(.bottom, 10)
             .frame(maxHeight: .infinity, alignment: .top)
         }
-        .frame(width: 430, height: 680)
+        .frame(width: 430, height: 750)
     }
 
     private var header: some View {

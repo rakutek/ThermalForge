@@ -326,15 +326,15 @@ public final class SMCFanHardware: ThermalHardware, @unchecked Sendable {
         let battery = ["TB0T"]
         let ambient = ["TAOL", "TA0P", "TS0P"]
 
-        result += cpu.map { SensorSpec(key: $0, family: .cpu, limit: 95, required: true, encoding: .float) }
-        result += gpu.map { SensorSpec(key: $0, family: .gpu, limit: 95, required: true, encoding: .float) }
+        result += cpu.map { SensorSpec(key: $0, family: .cpu, limit: 100, required: true, encoding: .float) }
+        result += gpu.map { SensorSpec(key: $0, family: .gpu, limit: 100, required: true, encoding: .float) }
         result += memory.map { SensorSpec(key: $0, family: .memory, limit: 90, required: true, encoding: .float) }
         result += storage.map { SensorSpec(key: $0, family: .storage, limit: 80, required: true, encoding: .float) }
         result += power.map { SensorSpec(key: $0, family: .power, limit: 90, required: true, encoding: .float) }
         result += battery.map { SensorSpec(key: $0, family: .battery, limit: 60, required: true, encoding: .float) }
         result += ambient.map { SensorSpec(key: $0, family: .ambient, limit: 100, required: false, encoding: .float) }
         result += ["TG0B", "TG0H", "TG0V"].map {
-            SensorSpec(key: $0, family: .gpu, limit: 95, required: true, encoding: .ioFixed)
+            SensorSpec(key: $0, family: .gpu, limit: 100, required: true, encoding: .ioFixed)
         }
         return result
     }()

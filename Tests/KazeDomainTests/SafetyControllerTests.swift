@@ -2,6 +2,13 @@ import XCTest
 @testable import KazeDomain
 
 final class SafetyControllerTests: XCTestCase {
+    func testDefaultThermalRecoveryWaitsAndRampsDownConservatively() {
+        let configuration = SafetyConfiguration()
+
+        XCTAssertEqual(configuration.healthySamplesBeforeResume, 40)
+        XCTAssertEqual(configuration.thermalRecoveryRampRPMPerSecond, 100)
+    }
+
     func testStartupAlwaysEstablishesVerifiedAutomaticMode() throws {
         let hardware = try MockHardware()
         let (controller, _) = makeController(hardware)
@@ -235,12 +242,22 @@ final class SafetyControllerTests: XCTestCase {
         controller.start(startTimer: false)
         hardware.temperatures["TC0P"] = 68
         controller.tickNow()
-        _ = try controller.acquire(intent: .profile(.smart), ownerSessionID: UUID(), leaseSeconds: 30)
+        let session = UUID()
+        let acquired = try controller.acquire(
+            intent: .profile(.smart),
+            ownerSessionID: session,
+            leaseSeconds: 30
+        )
+        let leaseID = try XCTUnwrap(acquired.leaseID)
 
         // Settle: the profile debounces for sustainedSeconds before taking manual control,
-        // then the ramp limiter needs a few more ticks to reach the curve target.
-        for index in 0..<40 {
+        // then the ramp limiter walks up to the curve target at 50 RPM/s. Only measure
+        // once it has had enough time to get there from the idle floor.
+        for index in 0..<160 {
             clock.now += 250_000_000
+            if index.isMultiple(of: 40) {
+                _ = try controller.renew(leaseID: leaseID, ownerSessionID: session)
+            }
             hardware.temperatures["TC0P"] = index.isMultiple(of: 2) ? 68 : 71
             controller.tickNow()
         }
@@ -249,6 +266,7 @@ final class SafetyControllerTests: XCTestCase {
         var observed: [Int] = []
         for index in 0..<24 {
             clock.now += 250_000_000
+            _ = try controller.renew(leaseID: leaseID, ownerSessionID: session)
             hardware.temperatures["TC0P"] = index.isMultiple(of: 2) ? 68 : 71
             controller.tickNow()
             observed.append(hardware.currentFans[0].targetRPM)
@@ -261,28 +279,278 @@ final class SafetyControllerTests: XCTestCase {
         XCTAssertLessThanOrEqual(hardware.manualCount - writesBeforeObservation, 1)
     }
 
+    func testSmartDoesNotChaseSingleSafeTemperatureSpike() throws {
+        let hardware = try MockHardware()
+        let (controller, clock) = makeController(hardware)
+        controller.start(startTimer: false)
+        hardware.temperatures["TC0P"] = 60
+        controller.tickNow()
+        _ = try controller.acquire(
+            intent: .profile(.smart),
+            ownerSessionID: UUID(),
+            leaseSeconds: 30
+        )
+
+        for _ in 0..<9 {
+            clock.now += 250_000_000
+            controller.tickNow()
+        }
+        let settled = hardware.currentFans[0].targetRPM
+
+        // A one-sample peak below the 95°C safety limit must pass through the
+        // temperature filter instead of jumping directly to the 3,000 RPM boundary.
+        hardware.temperatures["TC0P"] = 94
+        clock.now += 250_000_000
+        controller.tickNow()
+
+        let afterSpike = hardware.currentFans[0].targetRPM
+        XCTAssertEqual(controller.status().mode, .smart)
+        XCTAssertLessThan(afterSpike, 3_000)
+        XCTAssertLessThanOrEqual(afterSpike, settled + 300)
+    }
+
     func testSmartProfileStillRampsUpOnSustainedTemperatureRise() throws {
         let hardware = try MockHardware()
         let (controller, clock) = makeController(hardware)
         controller.start(startTimer: false)
         hardware.temperatures["TC0P"] = 60
         controller.tickNow()
-        _ = try controller.acquire(intent: .profile(.smart), ownerSessionID: UUID(), leaseSeconds: 30)
+        let session = UUID()
+        let acquired = try controller.acquire(
+            intent: .profile(.smart),
+            ownerSessionID: session,
+            leaseSeconds: 30
+        )
+        let leaseID = try XCTUnwrap(acquired.leaseID)
 
-        for _ in 0..<40 {
+        for index in 0..<40 {
             clock.now += 250_000_000
+            if index.isMultiple(of: 20) {
+                _ = try controller.renew(leaseID: leaseID, ownerSessionID: session)
+            }
             controller.tickNow()
         }
         let settled = hardware.currentFans[0].targetRPM
 
-        for index in 0..<24 {
+        // Forty seconds of rising die temperature, held short of the sensor's 95 degree
+        // safety limit so this exercises the profile rather than the thermal override.
+        // Smart ramps at 50 RPM/s, so the window has to be long enough for the limiter
+        // to actually deliver a meaningful climb.
+        for index in 0..<160 {
             clock.now += 250_000_000
-            hardware.temperatures["TC0P"] = 60 + Double(index + 1)
+            if index.isMultiple(of: 40) {
+                _ = try controller.renew(leaseID: leaseID, ownerSessionID: session)
+            }
+            hardware.temperatures["TC0P"] = min(60 + Double(index + 1), 88)
             controller.tickNow()
         }
 
         XCTAssertEqual(controller.status().mode, .smart)
         XCTAssertGreaterThan(hardware.currentFans[0].targetRPM, settled + 1_500)
+    }
+
+    func testSmartRiseBoostNeverExceedsProfileTopSpeed() throws {
+        let hardware = try MockHardware()
+        let (controller, clock) = makeController(hardware)
+        controller.start(startTimer: false)
+        hardware.temperatures["TC0P"] = 84
+        controller.tickNow()
+        let session = UUID()
+        let acquired = try controller.acquire(
+            intent: .profile(.smart),
+            ownerSessionID: session,
+            leaseSeconds: 30
+        )
+        let leaseID = try XCTUnwrap(acquired.leaseID)
+
+        // Settle just below the curve ceiling, then create a sharp but still safe rise.
+        // This activates Smart's anticipatory boost while the base curve is already at
+        // its configured top speed.
+        for index in 0..<340 {
+            clock.now += 250_000_000
+            if index.isMultiple(of: 40) {
+                _ = try controller.renew(leaseID: leaseID, ownerSessionID: session)
+            }
+            controller.tickNow()
+        }
+
+        hardware.temperatures["TC0P"] = 94
+        var observedTargets: [Int] = []
+        for _ in 0..<12 {
+            clock.now += 250_000_000
+            _ = try controller.renew(leaseID: leaseID, ownerSessionID: session)
+            controller.tickNow()
+            observedTargets.append(hardware.currentFans[0].targetRPM)
+        }
+
+        let limits = hardware.inventory.fans[0]
+        let smart = try ProfileID.smart.curve
+        let topSpeed = limits.minimumRPM
+            + Int((Double(limits.maximumRPM - limits.minimumRPM) * smart.maximumFraction).rounded())
+
+        XCTAssertEqual(controller.status().mode, .smart)
+        XCTAssertLessThanOrEqual(observedTargets.max() ?? 0, topSpeed)
+    }
+
+    func testSmartMovesImmediatelyBelowThreeThousandAndRampsAboveIt() throws {
+        let hardware = try MockHardware()
+        let (controller, clock) = makeController(hardware)
+        controller.start(startTimer: false)
+        hardware.temperatures["TC0P"] = 60
+        controller.tickNow()
+        _ = try controller.acquire(
+            intent: .profile(.smart),
+            ownerSessionID: UUID(),
+            leaseSeconds: 30
+        )
+
+        // Once the profile debounce completes, a target in the quiet range lands
+        // immediately instead of walking up from the hardware floor.
+        for _ in 0..<9 {
+            clock.now += 250_000_000
+            controller.tickNow()
+        }
+        let quietTarget = hardware.currentFans[0].targetRPM
+        XCTAssertEqual(hardware.currentFans[0].mode, .manual)
+        XCTAssertGreaterThan(quietTarget, hardware.inventory.fans[0].minimumRPM)
+        XCTAssertLessThan(quietTarget, 3_000)
+
+        // A sharp temperature rise may jump to the 3,000 RPM boundary, but only one
+        // tick's ramp allowance may be added above it.
+        hardware.temperatures["TC0P"] = 90
+        clock.now += 250_000_000
+        controller.tickNow()
+
+        let firstLoudTarget = hardware.currentFans[0].targetRPM
+        let permittedAboveBoundary = Int((try ProfileID.smart.curve.rampUpRPMPerSecond * 0.25).rounded(.up))
+        XCTAssertLessThan(quietTarget, firstLoudTarget)
+        XCTAssertLessThanOrEqual(firstLoudTarget, 3_000 + permittedAboveBoundary)
+    }
+
+    /// Audible fan noise is dominated by how abruptly the speed changes, so no profile may
+    /// hand the SMC a large step in one write. The bound is the ramp allowance for one tick
+    /// plus the write tolerance, since a sub-tolerance move is held back and applied later.
+    func testProfilesNeverStepFanSpeedAbruptly() throws {
+        for profile in ProfileID.allCases {
+            let hardware = try MockHardware()
+            let (controller, clock) = makeController(hardware)
+            controller.start(startTimer: false)
+            hardware.temperatures["TC0P"] = 60
+            controller.tickNow()
+            _ = try controller.acquire(intent: .profile(profile), ownerSessionID: UUID(), leaseSeconds: 30)
+
+            let curve = try profile.curve
+            let permitted = 100 + Int((curve.rampUpRPMPerSecond * 0.25).rounded())
+            var previous: Int?
+            var largestRateLimitedStep = 0
+
+            // Slam the die temperature between idle and near-ceiling every 20 ticks. Both
+            // ends stay above the profile's stop temperature, so control never hands back
+            // to the SMC and every move here is the ramp limiter's own work. Ticks where
+            // the fan is not already under manual control are skipped: the first manual
+            // write starts from whatever the SMC last targeted, which the mock reports as
+            // zero, and that handoff is not what the ramp limiter governs.
+            for index in 0..<80 {
+                clock.now += 250_000_000
+                hardware.temperatures["TC0P"] = (index / 20).isMultiple(of: 2) ? 60 : 90
+                controller.tickNow()
+                let fan = hardware.currentFans[0]
+                guard fan.mode == .manual else {
+                    previous = nil
+                    continue
+                }
+                if let previous {
+                    let lower = min(previous, fan.targetRPM)
+                    let upper = max(previous, fan.targetRPM)
+                    let entersSmartRamp = profile == .smart
+                        && lower <= 3_000
+                        && upper <= 3_000 + Int((curve.rampUpRPMPerSecond * 0.25).rounded(.up))
+                    if !entersSmartRamp {
+                        largestRateLimitedStep = max(
+                            largestRateLimitedStep,
+                            abs(fan.targetRPM - previous)
+                        )
+                    }
+                }
+                previous = fan.targetRPM
+            }
+
+            XCTAssertGreaterThan(
+                largestRateLimitedStep, 0,
+                "\(profile.rawValue) never moved fan 0 in its rate-limited range"
+            )
+            XCTAssertLessThanOrEqual(
+                largestRateLimitedStep, permitted,
+                "\(profile.rawValue) stepped fan 0 by \(largestRateLimitedStep) RPM in one tick"
+            )
+        }
+    }
+
+    /// Releasing a spinning fan back to the SMC in one tick is the sharpest change the
+    /// profile path can produce, and no ramp rate can soften it. Once the die cools past
+    /// the stop temperature the profile keeps control and walks the fan down to its floor,
+    /// handing back only when there is nothing left to hear.
+    func testProfileWindsDownToTheFanFloorBeforeReleasingControl() throws {
+        let hardware = try MockHardware()
+        let (controller, clock) = makeController(hardware)
+        controller.start(startTimer: false)
+        hardware.temperatures["TC0P"] = 80
+        controller.tickNow()
+        let session = UUID()
+        let acquired = try controller.acquire(
+            intent: .profile(.smart),
+            ownerSessionID: session,
+            leaseSeconds: 30
+        )
+        let leaseID = try XCTUnwrap(acquired.leaseID)
+
+        // Climb well clear of the fan floor.
+        for index in 0..<180 {
+            clock.now += 250_000_000
+            if index.isMultiple(of: 40) {
+                _ = try controller.renew(leaseID: leaseID, ownerSessionID: session)
+            }
+            controller.tickNow()
+        }
+        let hot = hardware.currentFans[0].targetRPM
+        XCTAssertGreaterThan(hot, 3_000, "profile never spun the fan up")
+
+        // Go idle abruptly. Both die sensors have to cool: the profile reads their peak,
+        // and it deliberately keeps control while either sits in the stop/start band.
+        // The app renews its lease throughout, as it does in normal use.
+        hardware.temperatures["TC0P"] = 30
+        hardware.temperatures["TG0P"] = 30
+        var releasedFrom: Int?
+        var previous = hot
+        var largestRateLimitedDrop = 0
+        for _ in 0..<400 where releasedFrom == nil {
+            clock.now += 250_000_000
+            _ = try controller.renew(leaseID: leaseID, ownerSessionID: session)
+            controller.tickNow()
+            let fan = hardware.currentFans[0]
+            guard fan.mode == .manual else {
+                releasedFrom = previous
+                continue
+            }
+            if previous > 3_000 {
+                largestRateLimitedDrop = max(
+                    largestRateLimitedDrop,
+                    previous - fan.targetRPM
+                )
+            }
+            previous = fan.targetRPM
+        }
+
+        let floor = hardware.inventory.fans[0].minimumRPM
+        XCTAssertEqual(
+            releasedFrom, floor,
+            "control returned to the SMC at \(releasedFrom.map(String.init) ?? "never") RPM"
+        )
+        XCTAssertLessThanOrEqual(
+            largestRateLimitedDrop,
+            100 + Int((try ProfileID.smart.curve.rampDownRPMPerSecond * 0.25).rounded()),
+            "wind-down dropped fan 0 by \(largestRateLimitedDrop) RPM in one tick"
+        )
     }
 
     func testActuationFailureNeverClaimsManualSuccess() throws {

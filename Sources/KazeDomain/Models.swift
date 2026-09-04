@@ -2,7 +2,7 @@ import Foundation
 
 public enum KazeVersion {
     public static let current = "2.0.0-alpha.2"
-    public static let protocolVersion = 6
+    public static let protocolVersion = 7
     public static let minimumMacOS = "14.0"
 }
 
@@ -125,7 +125,6 @@ public struct HardwareSample: Codable, Sendable, Equatable {
 }
 
 public enum ProfileID: String, CaseIterable, Codable, Sendable {
-    case balanced
     case performance
     case smart
 }
@@ -149,7 +148,6 @@ public enum ControlIntent: Codable, Sendable, Equatable {
 public enum ControllerMode: String, Codable, Sendable, Equatable {
     case starting
     case automatic
-    case balanced
     case performance
     case smart
     case fixed
@@ -164,7 +162,6 @@ public enum ControllerMode: String, Codable, Sendable, Equatable {
         switch self {
         case .starting: "Starting"
         case .automatic: "Apple Automatic"
-        case .balanced: "Balanced"
         case .performance: "Performance"
         case .smart: "Smart"
         case .fixed: "Fixed RPM"

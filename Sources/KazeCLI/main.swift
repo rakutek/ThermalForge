@@ -92,7 +92,7 @@ struct Automatic: AsyncParsableCommand {
 struct Profile: AsyncParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Run a built-in profile while this command remains alive")
 
-    @Argument(help: "balanced, performance, or smart")
+    @Argument(help: "smart or performance")
     var name: String
 
     @Option(name: .long, help: "Maximum runtime in seconds (default: 3600)")

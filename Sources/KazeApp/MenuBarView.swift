@@ -297,7 +297,7 @@ struct MenuBarView: View {
             "exclamationmark.triangle.fill"
         case .unrecoveredFault:
             "xmark.shield.fill"
-        case .balanced, .performance, .smart, .fixed, .maximum:
+        case .performance, .smart, .fixed, .maximum:
             "fan.fill"
         default:
             "fan"

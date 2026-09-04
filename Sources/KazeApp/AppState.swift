@@ -31,6 +31,10 @@ final class AppState: ObservableObject {
     private var renewalTask: Task<Void, Never>?
     private var registrationTask: Task<Void, Never>?
     private var controlGeneration: UInt64 = 0
+    /// The mode the user picked to run on. Maximum is deliberately excluded:
+    /// it is a boost, so the mode to come back to is the one it interrupted.
+    private var baseIntent: ControlIntent = .automatic
+    private var baseRestoreAttempts = 0
     /// The lease this app most recently held. A status already in flight can
     /// still report it for a moment after control is handed back — the helper
     /// clears the lease only once the reset lands — and that is our own lease
@@ -114,6 +118,8 @@ final class AppState: ObservableObject {
         UserDefaults.standard.set(true, forKey: "KazeAutomaticHelperRegistrationSuppressed")
         registrationTask?.cancel()
         registrationTask = nil
+        baseIntent = .automatic
+        baseRestoreAttempts = 0
         stopRenewing()
         controlGeneration &+= 1
         controlErrorMessage = nil
@@ -172,14 +178,21 @@ final class AppState: ObservableObject {
     }
 
     func selectProfile(_ profile: ProfileID) {
+        baseIntent = .profile(profile)
+        baseRestoreAttempts = 0
         acquire(.profile(profile))
     }
 
     func maximum() {
+        // `baseIntent` deliberately keeps whatever Maximum interrupted, so a
+        // fallback returns there instead of to Apple Automatic.
+        baseRestoreAttempts = 0
         acquire(.maximum)
     }
 
     func automatic() {
+        baseIntent = .automatic
+        baseRestoreAttempts = 0
         stopRenewing()
         controlGeneration &+= 1
         let generation = controlGeneration
@@ -382,7 +395,7 @@ final class AppState: ObservableObject {
                 maximumPoints: 180
             )
             guard !Task.isCancelled, requestedWindow == telemetryWindow else { return }
-            status = snapshot.status
+            acceptObservedStatus(snapshot.status)
             telemetrySamples = snapshot.samples
             telemetryErrorMessage = nil
         } catch {
@@ -410,7 +423,7 @@ final class AppState: ObservableObject {
                     "helper_connection_recovered failures=\(self.consecutiveConnectionFailures, privacy: .public)"
                 )
             }
-            status = newStatus
+            acceptObservedStatus(newStatus)
             consecutiveConnectionFailures = 0
             registrationRecoveryAttempt = 0
             nextRegistrationRecoveryUptimeNanoseconds = 0
@@ -418,6 +431,7 @@ final class AppState: ObservableObject {
             helperRecoveryMessage = nil
             errorMessage = nil
             refreshRegistrationStatus()
+            restoreBaseIntentIfNeeded()
         } catch {
             handleConnectionFailure(String(describing: error))
         }
@@ -592,6 +606,60 @@ final class AppState: ObservableObject {
     private func remainingNanoseconds(until deadline: UInt64) -> UInt64 {
         let now = DispatchTime.now().uptimeNanoseconds
         return deadline > now ? deadline - now : 0
+    }
+
+    /// Safety intervention or a hardware fail-safe ends the selected profile.
+    /// Require an explicit user action before manual fan control can start again;
+    /// silently re-arming while temperatures are volatile creates a cooling loop.
+    private func acceptObservedStatus(_ newStatus: ControllerStatus) {
+        status = newStatus
+        guard case .profile = baseIntent, let fault = newStatus.fault else { return }
+        switch newStatus.mode {
+        case .safetyMaximum, .safetyCooling:
+            let failedIntent = baseIntent.displayName
+            baseIntent = .automatic
+            baseRestoreAttempts = 0
+            stopRenewing()
+            ownLeaseID = nil
+            controlErrorMessage = "\(failedIntent) stopped · Safety cooling is active"
+            controlErrorDetail = fault.message
+        case .failSafeAutomatic, .failSafeMaximum, .unrecoveredFault:
+            let failedIntent = baseIntent.displayName
+            baseIntent = .automatic
+            baseRestoreAttempts = 0
+            stopRenewing()
+            ownLeaseID = nil
+            controlErrorMessage = "\(failedIntent) stopped · Apple Automatic is active"
+            controlErrorDetail = fault.message
+        default:
+            break
+        }
+    }
+
+    /// The helper hands control back to Apple Automatic whenever a lease ends or
+    /// safety cooling takes over — deliberately, since an app that stopped renewing
+    /// must not keep driving the fans. Once it is back on plain automatic with no
+    /// fault and no lease, the selected profile may be restored after a transient
+    /// interruption. Safety and fail-safe transitions are filtered by
+    /// `acceptObservedStatus` and always require explicit reacquisition.
+    ///
+    /// Maximum is not restored: it is a boost the user asked for once, and
+    /// re-arming it unattended would keep the fans at full speed indefinitely.
+    private func restoreBaseIntentIfNeeded() {
+        guard case .profile = baseIntent else { return }
+        guard !isPreviewMode, !isRecoveringHelper, !isManagingHelper else { return }
+        guard pendingIntent == nil, renewalTask == nil else { return }
+        guard let status, status.mode == .automatic,
+              status.fault == nil, status.leaseID == nil else { return }
+        // Repeated safety overrides would otherwise fight the restore forever.
+        // Three tries is enough to ride out a lease hiccup; past that the user
+        // decides, and picking any mode clears the count.
+        guard baseRestoreAttempts < 3 else { return }
+        baseRestoreAttempts += 1
+        logger.notice(
+            "base_intent_restore attempt=\(self.baseRestoreAttempts, privacy: .public) intent=\(self.baseIntent.displayName, privacy: .public)"
+        )
+        acquire(baseIntent)
     }
 
     private func isTerminalLeaseError(_ error: Error) -> Bool {

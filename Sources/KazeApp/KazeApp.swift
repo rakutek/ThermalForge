@@ -37,7 +37,7 @@ struct KazeApp: App {
         case .safetyMaximum, .safetyCooling, .failSafeAutomatic,
              .failSafeMaximum, .unrecoveredFault:
             "exclamationmark.triangle.fill"
-        case .balanced, .performance, .smart, .fixed, .maximum:
+        case .performance, .smart, .fixed, .maximum:
             "fan.fill"
         default:
             "fan"

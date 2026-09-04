@@ -13,13 +13,35 @@ final class ProfileTests: XCTestCase {
         }
     }
 
-    func testBuiltInProfilesUseResponsiveDebounceAndRamps() throws {
+    /// Perceived fan noise tracks how fast the speed *changes*, not the speed itself, so
+    /// every profile ramps gradually in both directions. The lower bounds keep a profile
+    /// from lagging so far behind its curve that it never reaches the target, and ramping
+    /// down no faster than up is what stops the fans from hunting around a threshold.
+    func testBuiltInProfilesRampGraduallyInBothDirections() throws {
         for profile in ProfileID.allCases {
             let curve = try profile.curve
             XCTAssertLessThanOrEqual(curve.sustainedSeconds, 3)
-            XCTAssertGreaterThanOrEqual(curve.rampUpRPMPerSecond, 1_000)
-            XCTAssertGreaterThanOrEqual(curve.rampDownRPMPerSecond, 500)
+            XCTAssertTrue(
+                (50...600).contains(curve.rampUpRPMPerSecond),
+                "\(profile.rawValue) ramps up at \(curve.rampUpRPMPerSecond) RPM/s"
+            )
+            XCTAssertTrue(
+                (50...300).contains(curve.rampDownRPMPerSecond),
+                "\(profile.rawValue) ramps down at \(curve.rampDownRPMPerSecond) RPM/s"
+            )
+            XCTAssertLessThanOrEqual(curve.rampDownRPMPerSecond, curve.rampUpRPMPerSecond)
         }
+    }
+
+    func testSmartProfileHasGentlerRiseAndLowerTopSpeedThanPerformance() throws {
+        let smart = try ProfileID.smart.curve
+        let performance = try ProfileID.performance.curve
+
+        XCTAssertEqual(smart.rampUpRPMPerSecond, 50)
+        XCTAssertEqual(smart.rampDownRPMPerSecond, 50)
+        XCTAssertEqual(smart.maximumFraction, 0.80)
+        XCTAssertLessThan(smart.rampUpRPMPerSecond, performance.rampUpRPMPerSecond)
+        XCTAssertLessThan(smart.maximumFraction, performance.maximumFraction)
     }
 
     func testCurveIsMonotonicAndBounded() throws {

@@ -24,15 +24,15 @@ public struct SafetyConfiguration: Sendable, Equatable {
         tickIntervalSeconds: Double = 0.25,
         sensorStaleSeconds: Double = 2,
         maximumLeaseSeconds: Double = 30,
-        healthySamplesBeforeResume: Int = 8,
+        healthySamplesBeforeResume: Int = 40,
         thermalResumeHysteresisCelsius: Double = 5,
-        thermalRecoveryRampRPMPerSecond: Double = 1_000,
+        thermalRecoveryRampRPMPerSecond: Double = 100,
         thermalRecoveryFloorFraction: Double = 0.65,
         targetToleranceRPM: Int = 100,
         fanResponseGraceSeconds: Double = 5,
         minimumFanResponseFraction: Double = 0.5,
-        dieTemperatureSmoothingSeconds: Double = 3,
-        profileFractionDeadband: Double = 0.02,
+        dieTemperatureSmoothingSeconds: Double = 5,
+        profileFractionDeadband: Double = 0.04,
         smartRiseWindowSeconds: Double = 2,
         smartRiseDeadbandCelsiusPerSecond: Double = 0.4,
         smartRiseGainPerCelsiusPerSecond: Double = 0.06,
@@ -107,6 +107,8 @@ public final class SafetyController: @unchecked Sendable {
     private var sustainedAboveSince: UInt64?
     private var lastAppliedTargets: [Int]?
     private var lastCommandAt: UInt64?
+    private var rampPosition: [Double]?
+    private var lastRampAt: UInt64?
     private var manualControlStartedAt: UInt64?
     private var smoothedDieTemperature: Double?
     private var smoothedDieTemperatureAt: UInt64?
@@ -120,6 +122,7 @@ public final class SafetyController: @unchecked Sendable {
 
     private static let telemetryIntervalNanoseconds: UInt64 = 1_000_000_000
     private static let telemetryRetentionNanoseconds: UInt64 = 3_600_000_000_000
+    private static let smartInstantaneousRPMCeiling = 3_000.0
     public static let maximumTelemetryPoints = 180
 
     public init(
@@ -426,17 +429,36 @@ public final class SafetyController: @unchecked Sendable {
         let currentlyManual = sample.fans.allSatisfy { $0.mode == .manual }
 
         // Die sensors jitter by a few degrees between 0.25 s ticks. Driving the curve
-        // straight off the raw peak turned that jitter into audible fan hunting, so the
-        // profile path runs on a low-pass filtered signal instead. The hard thermal net
-        // (firstUnsafeSensorLocked) still reads raw values every tick, and a raw peak at or
-        // above the curve ceiling bypasses the filter, so cooling headroom is unchanged.
+        // straight off the raw peak turned that jitter into audible fan hunting, so Smart
+        // always uses the low-pass filtered signal. Performance may still react directly
+        // at its curve ceiling. The hard thermal net above reads raw values every tick and
+        // applies maximum cooling immediately at a sensor's safety limit.
         let smoothed = updateSmoothedDieTemperatureLocked(peak: peak, now: now)
-        let controlTemperature = peak >= curve.ceilingTemperature ? max(smoothed, peak) : smoothed
+        let controlTemperature = profile == .smart
+            ? smoothed
+            : (peak >= curve.ceilingTemperature ? max(smoothed, peak) : smoothed)
 
         if controlTemperature <= curve.stopTemperature {
             sustainedAboveSince = nil
             resetSmartRiseAnchorLocked(temperature: smoothed, now: now)
             lastProfileFraction = nil
+            // Handing the fans back the instant the threshold is crossed drops them from
+            // wherever the ramp had them to whatever the SMC picks, which is the sharpest
+            // change in the whole profile path and the one most likely to be heard. Wind
+            // down to the fan floor under our own ramp first, then release. The deadband is
+            // bypassed here on purpose: it exists to stop hunting at a steady speed, and
+            // holding a non-zero fraction would keep the ramp from ever reaching the floor.
+            if currentlyManual, !rampIsAtFloorLocked() {
+                applyRampedTargetsLocked(
+                    fraction: 0,
+                    curve: curve,
+                    requestedMode: profile.controllerMode,
+                    sample: sample,
+                    now: now,
+                    force: force
+                )
+                return
+            }
             ensureAutomaticLocked(sample: sample, now: now, reportedMode: profile.controllerMode)
             return
         }
@@ -460,26 +482,114 @@ public final class SafetyController: @unchecked Sendable {
 
         var fraction = curve.fraction(at: controlTemperature)
         if profile == .smart {
-            fraction = min(fraction + smartRiseBoostLocked(temperature: smoothed, now: now), 1)
+            fraction = min(
+                fraction + smartRiseBoostLocked(temperature: smoothed, now: now),
+                curve.maximumFraction
+            )
         }
         fraction = holdProfileFractionLocked(fraction)
 
-        let elapsedSinceCommand = lastCommandAt.map { Double(now - $0) / 1_000_000_000 }
-            ?? configuration.tickIntervalSeconds
-        let elapsed = min(max(elapsedSinceCommand, 0.01), 2)
+        applyRampedTargetsLocked(
+            fraction: fraction,
+            curve: curve,
+            requestedMode: profile.controllerMode,
+            sample: sample,
+            now: now,
+            force: force
+        )
+    }
 
+    /// Advances the rate limiter one tick toward the curve's target and writes the result.
+    ///
+    /// The ramp runs on its own clock and keeps a fractional position between ticks.
+    /// Measuring the allowance from the last SMC write instead would let it pile up while
+    /// the fan holds steady, and the first move after a quiet stretch would land as one
+    /// large jump. A fan is audible when its speed changes, not when it is fast, so the
+    /// position advances by at most one tick's worth however long the hold was.
+    private func applyRampedTargetsLocked(
+        fraction: Double,
+        curve: ProfileCurve,
+        requestedMode: ControllerMode,
+        sample: HardwareSample,
+        now: UInt64,
+        force: Bool
+    ) {
+        let elapsedSinceRamp = lastRampAt.map { Double(now - $0) / 1_000_000_000 }
+            ?? configuration.tickIntervalSeconds
+        let elapsed = min(max(elapsedSinceRamp, 0.01), 2)
+        lastRampAt = now
+
+        var positions: [Double] = []
         var targets: [Int] = []
+        var smartInstantCeilings: [Int] = []
         for (offset, limits) in hardware.inventory.fans.enumerated() {
             let range = Double(limits.maximumRPM - limits.minimumRPM)
-            var target = Double(limits.minimumRPM) + range * fraction
-            let previous = Double(lastAppliedTargets?[safe: offset] ?? sample.fans[safe: offset]?.targetRPM ?? limits.minimumRPM)
-            let rate = target >= previous ? curve.rampUpRPMPerSecond : curve.rampDownRPMPerSecond
+            let curveTarget = Double(limits.minimumRPM) + range * fraction
+            // Seed from the SMC's own target on the first tick of manual control so the
+            // handoff picks up where Apple left the fan rather than snapping to the floor.
+            let previous = rampPosition?[safe: offset]
+                ?? Double(lastAppliedTargets?[safe: offset] ?? sample.fans[safe: offset]?.targetRPM ?? limits.minimumRPM)
+            let rate = curveTarget >= previous ? curve.rampUpRPMPerSecond : curve.rampDownRPMPerSecond
             let delta = rate * elapsed
-            target = target >= previous ? min(target, previous + delta) : max(target, previous - delta)
-            targets.append(min(max(Int(target.rounded()), limits.minimumRPM), limits.maximumRPM))
+            let stepped: Double
+            if requestedMode == .smart {
+                // Changes in the quiet range can land immediately. Above 3,000 RPM,
+                // where speed changes are much more audible, retain the gentle rate
+                // limit in both directions.
+                let instantCeiling = min(
+                    max(Self.smartInstantaneousRPMCeiling, Double(limits.minimumRPM)),
+                    Double(limits.maximumRPM)
+                )
+                smartInstantCeilings.append(Int(instantCeiling.rounded()))
+                if curveTarget <= instantCeiling, previous <= instantCeiling {
+                    stepped = curveTarget
+                } else if curveTarget >= previous {
+                    stepped = min(curveTarget, max(previous, instantCeiling) + delta)
+                } else {
+                    stepped = max(max(curveTarget, instantCeiling), previous - delta)
+                }
+            } else {
+                stepped = curveTarget >= previous
+                    ? min(curveTarget, previous + delta)
+                    : max(curveTarget, previous - delta)
+            }
+            let position = min(max(stepped, Double(limits.minimumRPM)), Double(limits.maximumRPM))
+            positions.append(position)
+            targets.append(Int(position.rounded()))
         }
+        rampPosition = positions
 
-        applyTargetsLocked(targets, requestedMode: profile.controllerMode, sample: sample, now: now, force: force)
+        // The normal write tolerance may otherwise swallow the final small step to the
+        // fan floor. Make that one step explicit before returning control to the SMC.
+        let reachedFloor = zip(targets, hardware.inventory.fans).allSatisfy { target, limits in
+            target == limits.minimumRPM
+        }
+        let targetWritePending = zip(targets, sample.fans).contains { target, fan in
+            fan.targetRPM != target
+        }
+        let reachingFloor = fraction <= 0 && reachedFloor && targetWritePending
+        let smartBoundaryWritePending = requestedMode == .smart
+            && zip(zip(targets, smartInstantCeilings), sample.fans).contains { pair, fan in
+                let (target, ceiling) = pair
+                return target == ceiling && fan.targetRPM != target
+            }
+        applyTargetsLocked(
+            targets,
+            requestedMode: requestedMode,
+            sample: sample,
+            now: now,
+            force: force || reachingFloor
+                || smartBoundaryWritePending
+        )
+    }
+
+    /// True once the ramp has walked every fan down to its slowest supported speed, which
+    /// is as close to the SMC's own idle handling as manual control can get.
+    private func rampIsAtFloorLocked() -> Bool {
+        guard let rampPosition else { return true }
+        return zip(rampPosition, hardware.inventory.fans).allSatisfy { position, limits in
+            position <= Double(limits.minimumRPM) + 1
+        }
     }
 
     private func applyTargetsLocked(
@@ -528,6 +638,8 @@ public final class SafetyController: @unchecked Sendable {
         if (try? verifyAutomatic(sample)) != nil {
             mode = fault == nil ? reportedMode : .failSafeAutomatic
             lastAppliedTargets = nil
+            rampPosition = nil
+            lastRampAt = nil
             manualControlStartedAt = nil
             return
         }
@@ -536,6 +648,8 @@ public final class SafetyController: @unchecked Sendable {
             try verifyAutomatic(verified)
             latestSample = verified
             lastAppliedTargets = nil
+            rampPosition = nil
+            lastRampAt = nil
             manualControlStartedAt = nil
             mode = fault == nil ? reportedMode : .failSafeAutomatic
         } catch {
@@ -928,6 +1042,8 @@ public final class SafetyController: @unchecked Sendable {
         sustainedAboveSince = nil
         lastAppliedTargets = nil
         lastCommandAt = nil
+        rampPosition = nil
+        lastRampAt = nil
         manualControlStartedAt = nil
         smoothedDieTemperature = nil
         smoothedDieTemperatureAt = nil
@@ -1080,13 +1196,13 @@ private extension SafetyConfiguration {
             maximumLeaseSeconds: maximumLeaseSeconds.isFinite && (5...300).contains(maximumLeaseSeconds)
                 ? maximumLeaseSeconds : 30,
             healthySamplesBeforeResume: (0...100).contains(healthySamplesBeforeResume)
-                ? healthySamplesBeforeResume : 8,
+                ? healthySamplesBeforeResume : 40,
             thermalResumeHysteresisCelsius: thermalResumeHysteresisCelsius.isFinite
                 && (1...20).contains(thermalResumeHysteresisCelsius)
                 ? thermalResumeHysteresisCelsius : 5,
             thermalRecoveryRampRPMPerSecond: thermalRecoveryRampRPMPerSecond.isFinite
                 && (100...10_000).contains(thermalRecoveryRampRPMPerSecond)
-                ? thermalRecoveryRampRPMPerSecond : 1_000,
+                ? thermalRecoveryRampRPMPerSecond : 100,
             thermalRecoveryFloorFraction: thermalRecoveryFloorFraction.isFinite
                 && (0.4...0.9).contains(thermalRecoveryFloorFraction)
                 ? thermalRecoveryFloorFraction : 0.65,
@@ -1099,10 +1215,10 @@ private extension SafetyConfiguration {
                 ? minimumFanResponseFraction : 0.5,
             dieTemperatureSmoothingSeconds: dieTemperatureSmoothingSeconds.isFinite
                 && (0...30).contains(dieTemperatureSmoothingSeconds)
-                ? dieTemperatureSmoothingSeconds : 3,
+                ? dieTemperatureSmoothingSeconds : 5,
             profileFractionDeadband: profileFractionDeadband.isFinite
                 && (0...0.1).contains(profileFractionDeadband)
-                ? profileFractionDeadband : 0.02,
+                ? profileFractionDeadband : 0.04,
             smartRiseWindowSeconds: smartRiseWindowSeconds.isFinite
                 && (0.25...30).contains(smartRiseWindowSeconds)
                 ? smartRiseWindowSeconds : 2,

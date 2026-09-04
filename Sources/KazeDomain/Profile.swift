@@ -69,17 +69,6 @@ public extension ProfileID {
     var curve: ProfileCurve {
         get throws {
             switch self {
-            case .balanced:
-                return try ProfileCurve(
-                    stopTemperature: 50,
-                    startTemperature: 55,
-                    ceilingTemperature: 75,
-                    maximumFraction: 0.65,
-                    shape: .easeIn,
-                    sustainedSeconds: 3,
-                    rampUpRPMPerSecond: 1_000,
-                    rampDownRPMPerSecond: 500
-                )
             case .performance:
                 return try ProfileCurve(
                     stopTemperature: 48,
@@ -88,19 +77,19 @@ public extension ProfileID {
                     maximumFraction: 0.90,
                     shape: .linear,
                     sustainedSeconds: 1,
-                    rampUpRPMPerSecond: 2_500,
-                    rampDownRPMPerSecond: 750
+                    rampUpRPMPerSecond: 500,
+                    rampDownRPMPerSecond: 180
                 )
             case .smart:
                 return try ProfileCurve(
                     stopTemperature: 48,
                     startTemperature: 52,
                     ceilingTemperature: 85,
-                    maximumFraction: 1,
+                    maximumFraction: 0.80,
                     shape: .sCurve,
                     sustainedSeconds: 2,
-                    rampUpRPMPerSecond: 1_200,
-                    rampDownRPMPerSecond: 500
+                    rampUpRPMPerSecond: 50,
+                    rampDownRPMPerSecond: 50
                 )
             }
         }
@@ -108,7 +97,6 @@ public extension ProfileID {
 
     var controllerMode: ControllerMode {
         switch self {
-        case .balanced: .balanced
         case .performance: .performance
         case .smart: .smart
         }

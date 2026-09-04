@@ -96,7 +96,6 @@ struct CoolingModeControlView: View {
         return Button {
             switch option {
             case .automatic: onAutomatic()
-            case .balanced: onSelectProfile(.balanced)
             case .smart: onSelectProfile(.smart)
             case .performance: onSelectProfile(.performance)
             case .maximum: onMaximum()
@@ -355,7 +354,6 @@ struct AppSettingsPopoverView: View {
 
 enum CoolingModeOption: String, CaseIterable, Identifiable {
     case automatic
-    case balanced
     case smart
     case performance
     case maximum
@@ -363,13 +361,12 @@ enum CoolingModeOption: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     static let profileOptions: [CoolingModeOption] = [
-        .automatic, .balanced, .smart, .performance,
+        .automatic, .smart, .performance,
     ]
 
     init?(intent: ControlIntent) {
         switch intent {
         case .automatic: self = .automatic
-        case .profile(.balanced): self = .balanced
         case .profile(.smart): self = .smart
         case .profile(.performance): self = .performance
         case .maximum: self = .maximum
@@ -380,7 +377,6 @@ enum CoolingModeOption: String, CaseIterable, Identifiable {
     var shortName: String {
         switch self {
         case .automatic: "Auto"
-        case .balanced: "Balanced"
         case .smart: "Smart"
         case .performance: "Performance"
         case .maximum: "Max"
@@ -390,7 +386,6 @@ enum CoolingModeOption: String, CaseIterable, Identifiable {
     var fullName: String {
         switch self {
         case .automatic: "Apple Automatic"
-        case .balanced: "Balanced"
         case .smart: "Smart"
         case .performance: "Performance"
         case .maximum: "Maximum"
@@ -400,7 +395,6 @@ enum CoolingModeOption: String, CaseIterable, Identifiable {
     var description: String {
         switch self {
         case .automatic: "Apple manages fan speed using the system controller."
-        case .balanced: "Quieter cooling for everyday work."
         case .smart: "Adapts to sustained heat and fast temperature rises."
         case .performance: "Responds earlier to keep temperatures lower."
         case .maximum: "Runs every fan at maximum speed."
@@ -411,7 +405,6 @@ enum CoolingModeOption: String, CaseIterable, Identifiable {
     var accent: Color {
         switch self {
         case .automatic: Color(red: 0.204, green: 0.780, blue: 0.349)
-        case .balanced: Color(red: 0.157, green: 0.682, blue: 0.616)
         case .smart: Color(red: 0.949, green: 0.718, blue: 0.157)
         case .performance: Color(red: 0.976, green: 0.451, blue: 0.086)
         case .maximum: Color(red: 0.937, green: 0.267, blue: 0.267)
